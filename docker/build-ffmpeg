@@ -1,0 +1,103 @@
+#!/bin/bash
+
+TARGET_ARCH=x86_64
+
+if [ "$1" != "" ]; then
+TARGET_ARCH="$1"
+fi
+
+echo "Building ffmpeg for architecture: $TARGET_ARCH ..."
+
+osxcross-macports install libde265 x265 openh264 codec2 openjpeg libtheora aom
+
+if [ "$2" == "skip" ]; then
+echo "Skipping download ffmpeg"
+else
+if ! [ -d /tmp/ffmpeg-7.0.3 ]; then
+wget https://ffmpeg.org/releases/ffmpeg-7.0.3.tar.gz -O /tmp/ffmpeg.tar.gz && tar xzf /tmp/ffmpeg.tar.gz -C /tmp/
+fi
+fi
+pushd /tmp/ffmpeg-7.0.3
+
+# 0) Clean any cached config
+if [ "$2" == "skip" ]; then
+echo "Skipping distclean..."
+else
+make distclean 2>/dev/null || true
+rm -f config.mak config.h
+fi
+
+# 1) Point PATH at osxcross tools
+export OSXCROSS_ROOT=/osxcross
+export PATH="$OSXCROSS_ROOT/bin:$PATH"
+
+# 2) Pick target + SDK
+export TARGET=$TARGET_ARCH-apple-darwin22.2        # or arm64-apple-darwin22
+export SDK="$OSXCROSS_ROOT/SDK/MacOSX13.1.sdk"   # adjust to your SDK path
+
+# 3) Target compilers and binutils (MUST be the osxcross ones)
+export CC="$TARGET-clang"
+export CXX="$TARGET-clang++"
+export AR="$TARGET-ar"
+export RANLIB="$TARGET-ranlib"
+export NM="$TARGET-nm"
+export STRIP="$TARGET-strip"
+# (Do NOT set LD; let clang pick the right ld64 via the target triple.)
+
+# 4) Host compiler (runs on your Linux box for tiny tools)
+export HOSTCC=clang
+export HOSTCFLAGS="-std=c11"
+
+# 5) Keep pkg-config from dragging in X11/macports stuff
+export PKG_CONFIG=${TARGET_ARCH}-apple-darwin$($TARGET_ARCH-apple-darwin22.2-clang -v 2>&1 | sed -n 's/.*-darwin\([0-9]*\).*/\1/p')-pkg-config
+export PKG_CONFIG_PATH=/osxcross/macports/pkgs/opt/local/lib/pkgconfig
+export PKG_CONFIG_LIBDIR=/osxcross/macports/pkgs/opt/local/lib/pkgconfig
+export CFLAGS="-I/osxcross/macports/pkgs/opt/local/include"
+export LDFLAGS="-L/osxcross/macports/pkgs/opt/local/lib"
+
+# 6) Extra flags so clang selects the right platform & C standard
+export EXTRA_CFLAGS="-isysroot $SDK -mmacosx-version-min=13.0 -std=c11"
+export EXTRA_LDFLAGS="-isysroot $SDK -mmacosx-version-min=13.0 -Wl,-headerpad_max_install_names"
+
+# (Optional) If your osxcross uses lld, you can force it:
+#export EXTRA_LDFLAGS="$EXTRA_LDFLAGS -fuse-ld=lld"
+
+# 7) Configure
+./configure \
+  --prefix=/osxcross/macports/pkgs/opt/local/libexec/ffmpeg7 \
+  --enable-cross-compile \
+  --target-os=darwin \
+  --arch=$TARGET_ARCH \
+  --cc="$CC" --cxx="$CXX" \
+  --ar="$AR" --ranlib="$RANLIB" --nm="$NM" --strip="$STRIP" \
+  --install-name-dir='@rpath' \
+  --sysroot="$SDK" \
+  --extra-cflags="$EXTRA_CFLAGS" \
+  --extra-ldflags="$EXTRA_LDFLAGS" \
+  --host-cc="$HOSTCC" --host-cflags="$HOSTCFLAGS" \
+  --disable-librsvg --disable-xlib --disable-libxcb \
+  --disable-vulkan --disable-opencl \
+  --disable-doc --disable-static --enable-shared \
+  --disable-programs \
+  --enable-videotoolbox \
+  --enable-audiotoolbox \
+  --enable-network --enable-securetransport \
+  --enable-swscale --enable-swresample --enable-nonfree \
+  --enable-libfreetype \
+  --enable-libaom \
+  --enable-libcodec2 \
+  --enable-libopenjpeg \
+  --enable-libmp3lame --enable-libopus \
+  --enable-libtheora --enable-libx264 \
+  --enable-libx265 \
+  --enable-opengl --enable-gpl
+
+make && make install
+
+## Removed features
+# --enable-libaom
+# --enable-libcodec2
+# --enable-libopenjpeg
+# --enable-libmp3lame --enable-libopus 
+#  --enable-libtheora --enable-libx264 \
+#  --enable-libx265 \

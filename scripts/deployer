@@ -1,0 +1,77 @@
+#!/bin/bash
+
+. $HOME/.deployer_qanotherrtsp
+cd "$(dirname "$(realpath "$0")")"/../
+
+alert() {
+curl -X POST --silent --output /dev/null https://api.telegram.org/bot${TGBOT}/sendMessage -d chat_id=${CHAT_ID} -d text="$1"
+}
+
+increase_build_number() {
+  local file="BUILD"
+  if [[ ! -f "$file" ]]; then
+    echo "0" > "$file"
+  fi
+
+  local number
+  number=$(<"$file")
+  if ! [[ "$number" =~ ^[0-9]+$ ]]; then
+    echo "Invalid build number in $file"
+    return 1
+  fi
+
+  ((number++))
+  echo "$number" > "$file"
+  echo "Build number increased to $number"
+}
+
+intercept_command() {
+CMM="$1"
+$CMM
+if [ $? -ne 0 ]; then
+alert "QAnotherRTSP deployer: command failed -> $CMM"
+fi
+}
+
+build_and_release() {
+increase_build_number
+echo "Building..."
+#intercept_command "make build_linux"
+#intercept_command "make release_linux"
+intercept_command "make docker_build_mactel"
+#intercept_command "make release_mactel"
+intercept_command "make docker_build_win"
+intercept_command "make release_win"
+echo "Build finished"
+}
+
+deploy() {
+BUILD=$(<BUILD)
+VERSION=$(<VERSION)
+echo "Deploying version $VERSION build: $BUILD"
+NEWDIR="v$VERSION-BUILD-$BUILD"
+ssh $TARGET -p 220 "cd $DEPDIR && mkdir $NEWDIR && unlink current && ln -sf $NEWDIR current"
+if [ -f release/AnotherRTSP-Mac-intel.zip ]; then
+$SCP release/AnotherRTSP-Mac-intel.zip $TARGET:$DEPDIR/$NEWDIR/
+fi
+
+if [ -f release/AnotherRTSP-Win-x64.zip ]; then
+$SCP release/AnotherRTSP-Win-x64.zip $TARGET:$DEPDIR/$NEWDIR/
+fi
+
+#if [ -f release/Conan-x86_64.AppImage ]; then
+#$SCP release/Conan-x86_64.AppImage $TARGET:$DEPDIR/$NEWDIR/
+#fi
+
+
+git commit -am "Build $BUILD"
+git push
+
+
+echo "Deployment finished"
+}
+
+git pull
+build_and_release
+deploy
+
