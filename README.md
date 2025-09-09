@@ -17,6 +17,9 @@ Thank you for your attention, and I wish you an enjoyable experience! :-)
 
 # QAnotherRTSP
 
+<img width="339" height="713" alt="QAnotherRTSP-pic1" src="https://github.com/user-attachments/assets/d0b06f15-00f6-47d5-bf3a-caaf2c60f118" />
+
+
 **QAnotherRTSP** is a lightweight cross-platform, multi-camera RTSP viewer with a system-tray UI, built in Go + Qt, focused on fast, live control.
 * **Tray-based control**: one click to open/close each camera; states shown as checkboxes.
 * **Instant edits**: add, edit, or remove cameras and the app applies changes live (no restart).
