@@ -101,7 +101,7 @@ func (t *TrayController) rebuild() {
 		if title == "" {
 			title = c.URL
 		}
-		act := cams.AddAction2(globalIcon, title)
+		act := cams.AddAction(title)
 		act.SetCheckable(true)
 
 		// Enabled = has a live window AND not marked disabled
