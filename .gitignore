@@ -1,4 +1,11 @@
-release/
-src/resource.rc
+lib
+share
+plugins
+include
+.DS_Store
+settings.yml
+release
 another-rtsp-*
 macdeployqtfix.log
+speedping-*
+src/resource.rc
