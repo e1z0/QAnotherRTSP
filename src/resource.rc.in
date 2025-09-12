@@ -1,0 +1,32 @@
+#include <winresrc.h>
+
+1 ICON "icon.ico"
+
+1 VERSIONINFO
+FILEVERSION     @VERSION_COMMA@
+PRODUCTVERSION  @VERSION_COMMA@
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          0x4L
+FILETYPE        0x1L
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName",      "e1z0"
+            VALUE "FileDescription",  "AnotherRTSP - lightweight cross-platform RTSP viewer"
+            VALUE "FileVersion",      "@VERSION_DOT@"
+            VALUE "InternalName",     "QAnotherRTSP"
+            VALUE "LegalCopyright",   "Copyright (c) 2025 Justinas K"
+            VALUE "OriginalFilename", "AnotherRTSP.exe"
+            VALUE "ProductName",      "AnotherRTSP"
+            VALUE "ProductVersion",   "@VERSION_DOT@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1252
+    END
+END

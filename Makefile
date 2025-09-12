@@ -1,8 +1,10 @@
 APP := AnotherRTSP
 SRC := ./src
 BUILD_FILE := BUILD
-VERSION := $(shell cat VERSION)
 BUILD := $(shell cat $(BUILD_FILE))
+VERSION := $(shell cat VERSION)
+VERSION_WIN := $(VERSION).0.$(BUILD)
+VERSION_COMMA := $(shell echo $(VERSION_WIN) | tr . ,)
 LINES := $(shell wc -l $(SRC)/*.go | grep total | awk '{print $$1}')
 BINARY := another-rtsp
 #QT_PATH_MAC := /opt/homebrew/opt/qt@5
@@ -84,14 +86,28 @@ docker_macarm_clean:
 docker_win_clean:
 	docker image rm $(WINDOCKERIMAGE)
 
-docker_build_win: ## Enter docker build environment for Windows
+embed_win: ## Embed Windows specific resources (such as version info, build etc...) from src/resource.rc.in
+	@echo "Mingw embed resources"
+	sed -e "s/@VERSION_COMMA@/$(VERSION_COMMA)/g" -e "s/@VERSION_DOT@/$(VERSION_WIN)/g" $(SRC)/resource.rc.in > $(SRC)/resource.rc
+	docker run --rm --init -i --user $(UID):$(UID) \
+	-v ${HOME}/go/pkg/mod:/go/pkg/mod \
+	-e GOMODCACHE=/go/pkg/mod \
+	-v /home/devnull/.cache/go-build:/.cache/go-build \
+	-e GOCACHE=/.cache/go-build \
+	-v ${PWD}:/src \
+	-w /src \
+	-e HOME=/tmp \
+	$(WINDOCKERIMAGE) \
+	x86_64-w64-mingw32.static-windres $(SRC)/resource.rc -O coff -o $(SRC)/resource.syso
+
+docker_build_win: docker_win embed_win ## Windows build
 	 docker run --rm --init -i --user $(UID):$(UID) \
 		-v ${HOME}/go/pkg/mod:/go/pkg/mod \
 		-e GOMODCACHE=/go/pkg/mod \
 		-v ${HOME}/.cache/go-build:/.cache/go-build \
 		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src/QAnotherRTSP \
-		-w /src/QAnotherRTSP \
+		-v ${PWD}:/src \
+		-w /src \
 		-e HOME=/tmp \
 		$(WINDOCKERIMAGE) \
 		go build -ldflags "-X main.version=${VERSION} \
@@ -139,8 +155,8 @@ docker_build_mactel: ## Build project for MacOS Intel
 		-e GOOS=darwin \
 		-e GOARCH=amd64 \
 		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src/QAnotherRTSP \
-		-w /src/QAnotherRTSP \
+		-v ${PWD}:/src \
+		-w /src \
 		-e HOME=/tmp \
 		$(OSXINTELDOCKER) \
                 ./scripts/dockerbuild
@@ -153,22 +169,11 @@ docker_build_macarm: ## Build project for MacOS arm
 		-e GOOS=darwin \
 		-e GOARCH=arm64 \
 		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src/QAnotherRTSP \
-		-w /src/QAnotherRTSP \
+		-v ${PWD}:/src \
+		-w /src \
 		-e HOME=/tmp \
  		$(OSXARMDOCKER) \
 		./scripts/dockerbuild
-
-#build_err:
-#	CGO_ENABLED=1 \
-#	PATH="$(QT5_BASE)/bin:$$PATH" \
-#	LDFLAGS="-L$(QT5_BASE)/lib -L/Applications/VLC.app/Contents/MacOS/lib" \
-#	CPPFLAGS="-I$(QT5_BASE)/include" \
-#	GOEXPERIMENT=cgocheck2 \
-#	CGO_LDFLAGS="-L/opt/homebrew/opt/ffmpeg/lib/" \
-#	CGO_CFLAGS="-I/opt/homebrew/opt/ffmpeg/include/" \
-#	PKG_CONFIG_PATH="$(QT5_BASE)/lib/pkgconfig:/opt/homebrew/opt/ffmpeg/pkgconfig" \
-#	go build -gcflags=all=-e -ldflags '-v -s -w' -o $(REL_MACOS_BIN) .
 
 release_mac: ## Release build for MacOS Apple Silicon/Intel (local mac machine only)
 	[ -d $(MAC_APP_DIR) ] && rm -rf $(MAC_APP_DIR) || true
@@ -178,8 +183,6 @@ release_mac: ## Release build for MacOS Apple Silicon/Intel (local mac machine o
 	mkdir $(MAC_APP_DIR)/Contents/{MacOS,Frameworks,libs}
 	cp $(REL_MACOS_BIN) $(MAC_APP_DIR)/Contents/MacOS/$(BINARY)
 	# copy all necessary ffmpeg folders
-	#cp -R $(FFMPEG_PREFIX)/lib/*.dylib $(MAC_APP_DIR)/Contents/Frameworks/
-	#chmod -R 755 $(MAC_APP_DIR)/Contents/MacOS/*
 	chmod +x $(MAC_APP_DIR)/Contents/MacOS/$(BINARY)
 	dylibbundler -od -b -x ./$(MAC_APP_DIR)/Contents/MacOS/$(BINARY) -d ./$(MAC_APP_DIR)/Contents/libs/
 	$(MAC_DEPLOY_QT) $(MAC_APP_DIR) -verbose=1 -always-overwrite -executable=$(MAC_APP_DIR)/Contents/MacOS/$(BINARY)
@@ -207,8 +210,8 @@ docker_mactel_enter: ## Enter docker build environment for MacOS Intel
 		-e GOOS=darwin \
 		-e GOARCH=amd64 \
 		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src/QAnotherRTSP \
-		-w /src/QAnotherRTSP \
+		-v ${PWD}:/src \
+		-w /src \
 		-e HOME=/tmp \
 		$(OSXINTELDOCKER) \
 		bash
@@ -222,8 +225,8 @@ docker_macarm_enter: ## Enter docker build environment for MacOS ARM
 		-e GOOS=darwin \
 		-e GOARCH=arm64 \
 		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src/QAnotherRTSP \
-		-w /src/QAnotherRTSP \
+		-v ${PWD}:/src \
+		-w /src \
 		-e HOME=/tmp \
 		$(OSXARMDOCKER) \
 		bash
@@ -235,8 +238,8 @@ docker_win_enter: ## Enter docker build environment for Windows
 		-e GOMODCACHE=/go/pkg/mod \
 		-v ${HOME}/.cache/go-build:/.cache/go-build \
 		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src/QAnotherRTSP \
-		-w /src/QAnotherRTSP \
+		-v ${PWD}:/src \
+		-w /src \
 		-e HOME=/tmp \
 		$(WINDOCKERIMAGE) \
 		bash
