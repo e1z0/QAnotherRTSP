@@ -1,0 +1,4 @@
+release/
+src/resource.rc
+another-rtsp-*
+macdeployqtfix.log
