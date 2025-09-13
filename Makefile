@@ -7,7 +7,7 @@ VERSION_WIN := $(VERSION).0.$(BUILD)
 VERSION_COMMA := $(shell echo $(VERSION_WIN) | tr . ,)
 LINES := $(shell wc -l $(SRC)/*.go | grep total | awk '{print $$1}')
 BINARY := another-rtsp
-#QT_PATH_MAC := /opt/homebrew/opt/qt@5
+REL_LINUX_BIN := $(BINARY)-linux
 REL_MACOS_BIN := $(BINARY)-mac
 REL_WINDOWS_BIN := $(BINARY)-win.exe
 REL_DIR := release
@@ -129,6 +129,35 @@ release_win: ## Release build for Windows x64 using docker
 	cd $(REL_DIR) && zip $(APP)-Win-x64.zip $(APP).exe && rm $(APP).exe && cd ..; \
 	else \
 	echo "Binary $(REL_WINDOWS_BIN) cannot be found, first run docker_build_win"; \
+	fi
+
+# Linux x64 (local build on linux host)
+build_linux: ## Local build for Linux
+	go build -ldflags "-X main.version=$(VERSION) \
+	-X main.build=$(BUILD) \
+	-X main.debugging=false \
+	-X main.lines=$(LINES) \
+	-v -s -w" -o $(REL_LINUX_BIN) $(SRC)
+
+# Make appImage release for Linux
+release_linux: ## Release build for Linux (appBundle) local linux machine only
+	@if [ ! -f $(REL_LINUX_BIN) ]; then \
+		echo "File $(REL_LINUX_BIN) not found, skipping. You should run make build_linux first"; \
+		exit 0; \
+	else \
+	[ -d resources/linux-skeleton/appDir ] && rm -rf resources/linux-skeleton/appDir; \
+		../utils/linuxdeploy-x86_64.AppImage \
+		--appdir resources/linux-skeleton/appDir \
+		--desktop-file resources/linux-skeleton/$(APP).desktop \
+		--icon-file resources/linux-skeleton/$(APP).png \
+		--executable $(REL_LINUX_BIN) \
+		--plugin qt \
+		--output appimage; \
+	if [ -f $(APP)-x86_64.AppImage ]; then \
+		rm -rf resources/linux-skeleton/appDir; \
+		mv $(APP)-x86_64.AppImage release/$(APP)-Linux-x86_64.AppImage; \
+		echo "Linux target released to release/$(APP)-Linux-x86_64.AppImage"; \
+	fi \
 	fi
 
 
