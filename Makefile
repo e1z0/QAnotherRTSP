@@ -18,6 +18,7 @@ GID ?= $(shell id -g)
 WINDOCKERIMAGE := qanotherrtsp-win64-cross-go1.23-qt5.15-static:latest
 OSXINTELDOCKER := qanotherrtsp-macos-cross-x86_64-sdk13.1-go1.24.3-qt5.15-dynamic:latest
 OSXARMDOCKER := qanotherrtsp-macos-cross-arm64-sdk13.1-go1.24.3-qt5.15-dynamic:latest
+LINUX64DOCKER := qanotherrtsp-linux64-go1.24-qt5.15-dynamic:latest
 OS := $(shell uname -s)
 
 ifeq ($(OS),Darwin)
@@ -33,88 +34,107 @@ else
     PLATFORM_VAR := "unknown"
 endif
 
+# ---------- Docker builder macro ----------
+# Args:
+#   1 = Filename
+#   2 = Image name
+define BUILD_DOCKER
+	@if ! docker image inspect "$(2)" > /dev/null 2>&1; then \
+	echo "Image not found, building..."; \
+	docker build -f docker/$(1) -t "$(2)" docker/; \
+	else \
+	echo "Docker image already built, using it..."; \
+	fi
+endef
 
-#ifneq ($(wildcard /usr/local/Cellar/qt@5),)
-#  QT5_BASE := $(lastword $(sort $(wildcard /usr/local/Cellar/qt@5/*)))
-#else ifneq ($(wildcard /opt/homebrew/opt/qt@5),)
-#  QT5_BASE := /opt/homebrew/opt/qt@5
-#else
-#  QT5_BASE :=
-#endif
+# ---------- Docker run macro ----------
+# Args:
+#   1 = GOOS           (e.g., linux)
+#   2 = GOARCH         (e.g., amd64 or arm64)
+#   3 = ARCH triplet   (e.g., x86_64 or aarch64)
+#   4 = Docker image   (e.g., $(LINUX64DOCKER))
+#   5 = Command
+#   6 = Fuse enabled 1
+#   7 = interactive 1
+define RUN_DOCKER
+	docker run --rm --init -i --user $(UID):$(GID) \
+		$(if $(7),-t,) \
+		$(if $(6),--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined,) \
+		-v ${HOME}/go/pkg/mod:/go/pkg/mod \
+		-e GOMODCACHE=/go/pkg/mod \
+		-v ${HOME}/.cache/go-build:/.cache/go-build \
+		-e GOOS=$(1) -e GOARCH=$(2) -e ARCH=$(3) \
+		-e GOCACHE=/.cache/go-build \
+		-v ${PWD}:/src -w /src \
+		-e HOME=/tmp \
+		$(4) \
+		bash -c 'if [[ "$$GOOS" == windows ]]; then sed -e "s/@VERSION_COMMA@/$(VERSION_COMMA)/g" \
+		-e "s/@VERSION_DOT@/$(VERSION_WIN)/g" $(SRC)/resource.rc.in > $(SRC)/resource.rc; \
+		x86_64-w64-mingw32.static-windres $(SRC)/resource.rc -O coff -o $(SRC)/resource.syso; \
+		fi; $(strip $(5))'
+endef
+
+# ---------- Go build macro ----------
+# Args:
+#   1 = DEBUG 1
+#   2 = WINDOWS 1
+#   3 = Binary name
+define GO_BUILD
+	go build -ldflags "-X main.version=${VERSION} \
+	-X main.build=${BUILD} \
+	-X main.lines=$(LINES) \
+	$(if $(1),-X main.debugging=false,) \
+	-s -w \
+	$(if $(2),-H windowsgui,) \
+	" \
+	$(if $(2),--tags=windowsqtstatic,) \
+	-o $(3) $(SRC)
+endef
+
+# ---------- Linux app Bundle macro ----------
+# Args:
+#   1 = Binary name
+define APP_BUNDLE
+	if [ ! -f "$(1)" ]; then echo "File $(1) not found, skipping. You should run make docker_build_linux first"; exit 0; fi; \
+	[ -d resources/linux-skeleton/appDir ] && rm -rf resources/linux-skeleton/appDir; \
+	mkdir -p resources/linux-skeleton/appDir/usr/bin/; \
+	cp -f "$(1)" "resources/linux-skeleton/appDir/usr/bin/"; \
+	./utils/linuxdeploy-x86_64.AppImage \
+	--appdir resources/linux-skeleton/appDir \
+	--desktop-file resources/linux-skeleton/$(APP).desktop \
+	--icon-file resources/linux-skeleton/$(APP).png \
+	--executable resources/linux-skeleton/appDir/usr/bin/$(1) \
+	--plugin qt \
+	--output appimage
+endef
 
 
+# default build (my mac :D)
 all: build_mac
 
-debug:
-	GOTRACEBACK=all GODEBUG='schedtrace=1000,gctrace=1' ./$(REL_MACOS_BIN)
-
-cleanup:
-	~/go/bin/staticcheck -checks=U1000 $(SRC)
-deps:
-	brew install qt@5 golang dylibbundler
-	go install github.com/mappu/miqt/cmd/miqt-rcc@latest
-
-res:
-	~/go/bin/miqt-rcc -RccBinary $(QT5_BASE)/bin/rcc -Input src/resources.qrc -OutputGo src/resources.qrc.go
-
-# Windows x86_64 docker builder
 docker_win: ## Make a Windows builder docker container
-	@if ! docker image inspect "$(WINDOCKERIMAGE)" > /dev/null 2>&1; then \
-	echo "Image not found, building..."; \
-	docker build -f docker/win64-cross-go1.23-qt5.15-static.Dockerfile -t "$(WINDOCKERIMAGE)" docker/; \
-	else \
-	echo "Docker image already built, using it..."; \
-	fi
+	$(call BUILD_DOCKER,win64-cross-go1.23-qt5.15-static.Dockerfile,$(WINDOCKERIMAGE))
+
 docker_mactel: ## Make a MacOS Intel builder docker container
-	@if ! docker image inspect "$(OSXINTELDOCKER)" > /dev/null 2>&1; then \
-	echo "Image not found, building..."; \
-	docker build -f docker/macos-cross-x86_64-sdk13.1-go1.23-qt5.15-dynamic.Dockerfile -t "$(OSXINTELDOCKER)" docker/; \
-	else \
-	echo "Docker image already built, using it..."; \
-	fi
-docker_macarm: # Make a MacOS Arm builder docker container
-	@if ! docker image inspect "$(OSXARMDOCKER)" > /dev/null 2>&1; then \
-	echo "Image not found, building..."; \
-	docker build -f docker/macos-cross-arm64-sdk13.1-go1.23-qt5.15-dynamic.Dockerfile -t "$(OSXARMDOCKER)" docker/; \
-	else \
-	echo "Docker image already built, using it..."; \
-	fi
+	$(call BUILD_DOCKER,macos-cross-x86_64-sdk13.1-go1.23-qt5.15-dynamic.Dockerfile,$(OSXINTELDOCKER))
+
+docker_macarm: ## Make a MacOS Arm builder docker container
+	$(call BUILD_DOCKER,macos-cross-arm64-sdk13.1-go1.23-qt5.15-dynamic.Dockerfile,$(OSXARMDOCKER))
+
+docker_linux: ## Make a Linux x64 bulder docker container
+	$(call BUILD_DOCKER,linux64-go1.24-qt5.15-dynamic.Dockerfile,$(LINUX64DOCKER))
+
 docker_mactel_clean:
 	docker image rm $(OSXINTELDOCKER)
 docker_macarm_clean:
 	docker image rm $(OSXARMDOCKER)
 docker_win_clean:
 	docker image rm $(WINDOCKERIMAGE)
+docker_linux_clean:
+	docker image rm $(LINUX64DOCKER)
 
-embed_win: ## Embed Windows specific resources (such as version info, build etc...) from src/resource.rc.in
-	@echo "Mingw embed resources"
-	sed -e "s/@VERSION_COMMA@/$(VERSION_COMMA)/g" -e "s/@VERSION_DOT@/$(VERSION_WIN)/g" $(SRC)/resource.rc.in > $(SRC)/resource.rc
-	docker run --rm --init -i --user $(UID):$(UID) \
-	-v ${HOME}/go/pkg/mod:/go/pkg/mod \
-	-e GOMODCACHE=/go/pkg/mod \
-	-v /home/devnull/.cache/go-build:/.cache/go-build \
-	-e GOCACHE=/.cache/go-build \
-	-v ${PWD}:/src \
-	-w /src \
-	-e HOME=/tmp \
-	$(WINDOCKERIMAGE) \
-	x86_64-w64-mingw32.static-windres $(SRC)/resource.rc -O coff -o $(SRC)/resource.syso
-
-docker_build_win: docker_win embed_win ## Windows build
-	 docker run --rm --init -i --user $(UID):$(UID) \
-		-v ${HOME}/go/pkg/mod:/go/pkg/mod \
-		-e GOMODCACHE=/go/pkg/mod \
-		-v ${HOME}/.cache/go-build:/.cache/go-build \
-		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src \
-		-w /src \
-		-e HOME=/tmp \
-		$(WINDOCKERIMAGE) \
-		go build -ldflags "-X main.version=${VERSION} \
-		-X main.build=${BUILD} \
-		-X main.lines=$(LINES) \
-		-X main.debugging=false \
-		-s -w -H windowsgui" --tags=windowsqtstatic -o $(REL_WINDOWS_BIN) ./src/
+docker_build_win:
+	$(call RUN_DOCKER,windows,amd64,amd64,$(WINDOCKERIMAGE),$(call GO_BUILD,,1,$(REL_WINDOWS_BIN)),,)
 	@if [ -e $(SRC)/resource.syso ]; then \
 		rm $(SRC)/resource.syso; \
 	fi
@@ -131,35 +151,18 @@ release_win: ## Release build for Windows x64 using docker
 	echo "Binary $(REL_WINDOWS_BIN) cannot be found, first run docker_build_win"; \
 	fi
 
-# Linux x64 (local build on linux host)
+# Linux x64 (local build on linux host) should be latest debian trixie or compatible release
 build_linux: ## Local build for Linux
-	go build -ldflags "-X main.version=$(VERSION) \
-	-X main.build=$(BUILD) \
-	-X main.debugging=false \
-	-X main.lines=$(LINES) \
-	-v -s -w" -o $(REL_LINUX_BIN) $(SRC)
+	$(call GO_BUILD,,,$(REL_LINUX_BIN))
 
 # Make appImage release for Linux
-release_linux: ## Release build for Linux (appBundle) local linux machine only
-	@if [ ! -f $(REL_LINUX_BIN) ]; then \
-		echo "File $(REL_LINUX_BIN) not found, skipping. You should run make build_linux first"; \
-		exit 0; \
-	else \
-	[ -d resources/linux-skeleton/appDir ] && rm -rf resources/linux-skeleton/appDir; \
-		../utils/linuxdeploy-x86_64.AppImage \
-		--appdir resources/linux-skeleton/appDir \
-		--desktop-file resources/linux-skeleton/$(APP).desktop \
-		--icon-file resources/linux-skeleton/$(APP).png \
-		--executable $(REL_LINUX_BIN) \
-		--plugin qt \
-		--output appimage; \
+release_linux: ## Release build for Linux (appBundle)
+	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),$(call APP_BUNDLE,$(REL_LINUX_BIN)),1,)
 	if [ -f $(APP)-x86_64.AppImage ]; then \
 		rm -rf resources/linux-skeleton/appDir; \
 		mv $(APP)-x86_64.AppImage release/$(APP)-Linux-x86_64.AppImage; \
 		echo "Linux target released to release/$(APP)-Linux-x86_64.AppImage"; \
-	fi \
 	fi
-
 
 build_mac: check-qt
 	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
@@ -174,35 +177,16 @@ build_mac: check-qt
 	-X main.lines=$(LINES) \
 	-X main.debugging=true \
 	-v -s -w" -o $(REL_MACOS_BIN) $(SRC)
-	#install_name_tool -add_rpath "@executable_path/lib" $(REL_MACOS_BIN)
 
 docker_build_mactel: ## Build project for MacOS Intel
-	docker run --rm --init -i --user $(UID):$(UID) \
-		-v ${HOME}/go/pkg/mod:/go/pkg/mod \
-		-e GOMODCACHE=/go/pkg/mod \
-		-v ${HOME}/.cache/go-build:/.cache/go-build \
-		-e GOOS=darwin \
-		-e GOARCH=amd64 \
-		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src \
-		-w /src \
-		-e HOME=/tmp \
-		$(OSXINTELDOCKER) \
-                ./scripts/dockerbuild
+	$(call RUN_DOCKER,darwin,amd64,amd64,$(OSXINTELDOCKER),./scripts/dockerbuild,,)
 
 docker_build_macarm: ## Build project for MacOS arm
-	docker run --rm --init -i --user $(UID):$(UID) \
-		-v ${HOME}/go/pkg/mod:/go/pkg/mod \
-		-e GOMODCACHE=/go/pkg/mod \
-		-v ${HOME}/.cache/go-build:/.cache/go-build \
-		-e GOOS=darwin \
-		-e GOARCH=arm64 \
-		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src \
-		-w /src \
-		-e HOME=/tmp \
- 		$(OSXARMDOCKER) \
-		./scripts/dockerbuild
+	$(call RUN_DOCKER,darwin,arm64,arm64,$(OSXARMDOCKER),./scripts/dockerbuild,,)
+
+docker_build_linux: docker_linux
+	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
+	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),$(call GO_BUILD,,,$(REL_LINUX_BIN)),,)
 
 release_mac: ## Release build for MacOS Apple Silicon/Intel (local mac machine only)
 	[ -d $(MAC_APP_DIR) ] && rm -rf $(MAC_APP_DIR) || true
@@ -232,46 +216,19 @@ release_mac: ## Release build for MacOS Apple Silicon/Intel (local mac machine o
 
 # Enter MacOS x86_64 docker
 docker_mactel_enter: ## Enter docker build environment for MacOS Intel
-	docker run --rm --init -i -t --user $(UID):$(UID) \
-		-v ${HOME}/go/pkg/mod:/go/pkg/mod \
-		-e GOMODCACHE=/go/pkg/mod \
-		-v ${HOME}/.cache/go-build:/.cache/go-build \
-		-e GOOS=darwin \
-		-e GOARCH=amd64 \
-		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src \
-		-w /src \
-		-e HOME=/tmp \
-		$(OSXINTELDOCKER) \
-		bash
+	$(call RUN_DOCKER,darwin,amd64,amd64,$(OSXINTELDOCKER),bash,,1)
 
 # Enter MacOS ARM64 docker
 docker_macarm_enter: ## Enter docker build environment for MacOS ARM
-	docker run --rm --init -i -t --user $(UID):$(UID) \
-		-v ${HOME}/go/pkg/mod:/go/pkg/mod \
-		-e GOMODCACHE=/go/pkg/mod \
-		-v ${HOME}/.cache/go-build:/.cache/go-build \
-		-e GOOS=darwin \
-		-e GOARCH=arm64 \
-		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src \
-		-w /src \
-		-e HOME=/tmp \
-		$(OSXARMDOCKER) \
-		bash
+	$(call RUN_DOCKER,darwin,arm64,arm64,$(OSXARMDOCKER),bash,,1)
 
 # Enter Windows docker
 docker_win_enter: ## Enter docker build environment for Windows
-	docker run --rm --init -i -t --user $(UID):$(UID) \
-		-v ${HOME}/go/pkg/mod:/go/pkg/mod \
-		-e GOMODCACHE=/go/pkg/mod \
-		-v ${HOME}/.cache/go-build:/.cache/go-build \
-		-e GOCACHE=/.cache/go-build \
-		-v ${PWD}:/src \
-		-w /src \
-		-e HOME=/tmp \
-		$(WINDOCKERIMAGE) \
-		bash
+	$(call RUN_DOCKER,windows,amd64,amd64,$(WINDOCKERIMAGE),bash,,1)
+
+# Enter Linux docker
+docker_linux_enter: docker_linux
+	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),bash,1,1)
 
 check-qt:
 	@if [ -z "$(QT5_PREFIX)" ]; then \
@@ -280,3 +237,17 @@ check-qt:
 	  echo "Try: brew install qt@5"; \
 	  exit 1; \
 	fi
+
+debug:
+	GOTRACEBACK=all GODEBUG='schedtrace=1000,gctrace=1' ./$(REL_MACOS_BIN)
+
+cleanup:
+	~/go/bin/staticcheck -checks=U1000 $(SRC)
+
+deps:
+	brew install qt@5 golang dylibbundler
+	go install github.com/mappu/miqt/cmd/miqt-rcc@latest
+
+res:
+	~/go/bin/miqt-rcc -RccBinary $(QT5_BASE)/bin/rcc -Input src/resources.qrc -OutputGo src/resources.qrc.go
+

@@ -37,7 +37,8 @@ build_and_release() {
 increase_build_number
 echo "Building..."
 #intercept_command "make build_linux"
-#intercept_command "make release_linux"
+intercept_command "make docker_build_linux"
+intercept_command "make release_linux"
 intercept_command "make docker_build_mactel"
 #intercept_command "make release_mactel"
 intercept_command "make docker_build_win"
@@ -59,9 +60,9 @@ if [ -f release/AnotherRTSP-Win-x64.zip ]; then
 $SCP release/AnotherRTSP-Win-x64.zip $TARGET:$DEPDIR/$NEWDIR/
 fi
 
-#if [ -f release/Conan-x86_64.AppImage ]; then
-#$SCP release/Conan-x86_64.AppImage $TARGET:$DEPDIR/$NEWDIR/
-#fi
+if [ -f release/AnotherRTSP-Linux-x86_64.AppImage ]; then
+$SCP release/AnotherRTSP-Linux-x86_64.AppImage $TARGET:$DEPDIR/$NEWDIR/
+fi
 
 
 git commit -am "Build $BUILD"
