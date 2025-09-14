@@ -214,10 +214,18 @@ func (d *SettingsDialog) onAdd() {
 				return
 			}
 			wins[newIdx] = w
-			tray.rebuild()
-			tray.AttachWindowHooks(newIdx, w)
-
 		}
+		tray.rebuild()
+
+		for i, w := range wins {
+			if w == nil {
+				continue
+			}
+			if tray != nil {
+				tray.AttachWindowHooks(i, w)
+			}
+		}
+
 	}
 }
 
@@ -254,6 +262,15 @@ func (d *SettingsDialog) onEdit() {
 			tray.mu.Unlock()
 			log.Printf("rebuilding the tray...")
 			tray.rebuild()
+		}
+		tray.rebuild()
+		for i, w := range wins {
+			if w == nil {
+				continue
+			}
+			if tray != nil {
+				tray.AttachWindowHooks(i, w)
+			}
 		}
 	}
 }
@@ -293,6 +310,7 @@ func (d *SettingsDialog) onRemove() {
 	}
 	configMu.Unlock()
 
+	// close the corresponding camera window
 	for _, w := range wins {
 		if w == nil {
 			continue
@@ -302,12 +320,23 @@ func (d *SettingsDialog) onRemove() {
 		}
 	}
 
+	// rebuild the tray and context menus
 	if tray != nil {
 		tray.mu.Lock()
 		// keep tray controller's config in sync with dialog working copy
 		tray.cfg.Cameras = append([]CameraConfig(nil), d.cams...)
 		tray.mu.Unlock()
 		tray.rebuild()
+	}
+
+	// reattach new context menus
+	for i, w := range wins {
+		if w == nil {
+			continue
+		}
+		if tray != nil {
+			tray.AttachWindowHooks(i, w)
+		}
 	}
 
 }

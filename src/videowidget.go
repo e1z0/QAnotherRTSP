@@ -45,8 +45,10 @@ type VideoWidget struct {
 	origH    int
 	titleLbl *qt.QLabel // camera name label
 	// group of glued windows (including owner) and their original positions
-	group    []*CamWindow
-	groupPos map[*CamWindow]struct{ X, Y int }
+	group      []*CamWindow
+	groupPos   map[*CamWindow]struct{ X, Y int }
+	ctxMenu    *qt.QMenu
+	menuHooked bool
 }
 
 const (
@@ -345,18 +347,6 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 // Present requests a repaint from any thread.
 func (w *VideoWidget) Present() { w.Update() }
 
-// We call this from the tray controller.
-func (v *VideoWidget) SetContextMenu(menu *qt.QMenu) {
-	if v == nil || v.QWidget == nil || menu == nil {
-		return
-	}
-	v.QWidget.SetContextMenuPolicy(qt.CustomContextMenu)
-	v.QWidget.OnCustomContextMenuRequested(func(pos *qt.QPoint) {
-		global := v.QWidget.MapToGlobal(pos)
-		menu.Popup(global)
-	})
-}
-
 // SetOverlayTitle updates the small top-left label shown in frameless mode.
 func (w *VideoWidget) SetOverlayTitle(text string, visible bool) {
 	if w == nil || w.titleLbl == nil {
@@ -540,6 +530,40 @@ func (w *VideoWidget) snapActive() bool {
 	} // Holding Alt disables snap/glue
 
 	return !top.IsFullScreen()
+}
+
+/*
+// We call this from the tray controller.
+func (v *VideoWidget) SetContextMenu(menu *qt.QMenu) {
+	if v == nil || v.QWidget == nil || menu == nil {
+		return
+	}
+	v.QWidget.SetContextMenuPolicy(qt.CustomContextMenu)
+	v.QWidget.OnCustomContextMenuRequested(func(pos *qt.QPoint) {
+		global := v.QWidget.MapToGlobal(pos)
+		menu.Popup(global)
+	})
+}
+*/
+
+func (v *VideoWidget) SetContextMenu(menu *qt.QMenu) {
+	if v == nil || v.QWidget == nil {
+		return
+	}
+	// Update the menu pointer used by the single handler
+	v.ctxMenu = menu
+	if v.menuHooked {
+		return
+	}
+	v.menuHooked = true
+	v.QWidget.SetContextMenuPolicy(qt.CustomContextMenu)
+	v.QWidget.OnCustomContextMenuRequested(func(pos *qt.QPoint) {
+		if v.ctxMenu == nil {
+			return
+		}
+		global := v.QWidget.MapToGlobal(pos)
+		v.ctxMenu.Popup(global)
+	})
 }
 
 func abs(v int) int {

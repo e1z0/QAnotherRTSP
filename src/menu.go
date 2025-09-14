@@ -272,8 +272,25 @@ func (t *TrayController) AttachWindowHooks(idx int, w *CamWindow) {
 	if w == nil {
 		return
 	}
+	if w.view != nil && t.tray != nil && t.tray.ContextMenu() != nil {
+		if !w.contextHooked {
+			w.view.SetContextMenu(t.tray.ContextMenu()) // single handler inside widget
+			w.contextHooked = true
+		} else {
+			// If the tray rebuilt its menu, update the pointer:
+			w.view.SetContextMenu(t.tray.ContextMenu())
+		}
+	}
+	w.SetOnClosed(func(i int) { t.WindowWasClosed(i) })
+}
+
+/*func (t *TrayController) AttachWindowHooks(idx int, w *CamWindow) {
+	if w == nil {
+		return
+	}
 	// Same context menu on the video widget (right-click)
 	if w.view != nil && t.tray != nil && t.tray.ContextMenu() != nil {
+		w.view.SetContextMenu(nil)
 		w.view.SetContextMenu(t.tray.ContextMenu())
 	}
 
@@ -281,7 +298,7 @@ func (t *TrayController) AttachWindowHooks(idx int, w *CamWindow) {
 	w.SetOnClosed(func(i int) {
 		t.WindowWasClosed(i)
 	})
-}
+}*/
 
 func (t *TrayController) WindowWasClosed(idx int) {
 	t.mu.Lock()

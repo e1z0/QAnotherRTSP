@@ -56,10 +56,11 @@ type CamWindow struct {
 	prevX, prevY int
 	prevW, prevH int
 	// Debounce saver skip persistence
-	suppressSave bool
-	tmpBGRA      []byte
-	tmpStride    int
-	repaintTimer *qt.QTimer
+	suppressSave  bool
+	tmpBGRA       []byte
+	tmpStride     int
+	repaintTimer  *qt.QTimer
+	contextHooked bool
 }
 
 func (w *CamWindow) SetOnClosed(fn func(int)) { w.onClosed = fn }
