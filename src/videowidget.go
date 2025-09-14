@@ -532,20 +532,7 @@ func (w *VideoWidget) snapActive() bool {
 	return !top.IsFullScreen()
 }
 
-/*
 // We call this from the tray controller.
-func (v *VideoWidget) SetContextMenu(menu *qt.QMenu) {
-	if v == nil || v.QWidget == nil || menu == nil {
-		return
-	}
-	v.QWidget.SetContextMenuPolicy(qt.CustomContextMenu)
-	v.QWidget.OnCustomContextMenuRequested(func(pos *qt.QPoint) {
-		global := v.QWidget.MapToGlobal(pos)
-		menu.Popup(global)
-	})
-}
-*/
-
 func (v *VideoWidget) SetContextMenu(menu *qt.QMenu) {
 	if v == nil || v.QWidget == nil {
 		return

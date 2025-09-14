@@ -128,9 +128,14 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 
 	win.OnCloseEvent(func(super func(event *qt.QCloseEvent), event *qt.QCloseEvent) {
 		super(event)
+		if w.closing {
+			return
+		}
+		w.closing = true
+		w.Close()
+
 		// Only notify if not suppressed
 		if w.onClosed != nil && !w.suppressOnClosed {
-			w.Close()
 			cb := w.onClosed
 			i := w.idx
 			// Post it to run after the event returns (prevents re-entrancy)

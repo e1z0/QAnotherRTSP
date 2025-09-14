@@ -284,22 +284,6 @@ func (t *TrayController) AttachWindowHooks(idx int, w *CamWindow) {
 	w.SetOnClosed(func(i int) { t.WindowWasClosed(i) })
 }
 
-/*func (t *TrayController) AttachWindowHooks(idx int, w *CamWindow) {
-	if w == nil {
-		return
-	}
-	// Same context menu on the video widget (right-click)
-	if w.view != nil && t.tray != nil && t.tray.ContextMenu() != nil {
-		w.view.SetContextMenu(nil)
-		w.view.SetContextMenu(t.tray.ContextMenu())
-	}
-
-	// When a user closes the camera window, uncheck in tray + mark disabled
-	w.SetOnClosed(func(i int) {
-		t.WindowWasClosed(i)
-	})
-}*/
-
 func (t *TrayController) WindowWasClosed(idx int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

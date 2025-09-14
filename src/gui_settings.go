@@ -263,7 +263,6 @@ func (d *SettingsDialog) onEdit() {
 			log.Printf("rebuilding the tray...")
 			tray.rebuild()
 		}
-		tray.rebuild()
 		for i, w := range wins {
 			if w == nil {
 				continue
