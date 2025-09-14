@@ -80,6 +80,15 @@ func main() {
 
 	qt.NewQApplication(os.Args)
 
+	// immediate action when trying to quit using OS signals
+	qt.QCoreApplication_Instance().InstallEventFilter(newQuitFilter().QObject)
+
+	// (optional) still fine to keep AboutToQuit as a late fallback
+	qt.QCoreApplication_Instance().OnAboutToQuit(func() {
+		log.Println("aboutToQuit (late)")
+		appQuitting.Store(true)
+	})
+
 	pixmap := qt.NewQPixmap()
 	pixmap.Load(":/icon.png")
 	globalIcon = qt.NewQIcon2(pixmap)

@@ -294,6 +294,19 @@ func (t *TrayController) WindowWasClosed(idx int) {
 
 	// Clear window slot and disable camera in config
 	(*t.wins)[idx] = nil
+
+	// If we are quitting the app, *do not* mark disabled and *do not* save here.
+	if appQuitting.Load() {
+		log.Printf("App is quitting, avoiding saving...\n")
+		// Keep the tray checkbox visually in sync anyway.
+		if idx < len(t.actions) && t.actions[idx] != nil {
+			t.actions[idx].BlockSignals(true)
+			t.actions[idx].SetChecked(false)
+			t.actions[idx].BlockSignals(false)
+		}
+		return
+	}
+
 	t.cfg.Cameras[idx].Disabled = true
 
 	// Uncheck the corresponding tray action, if any

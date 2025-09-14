@@ -30,12 +30,16 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"unicode"
 
 	astiav "github.com/asticode/go-astiav"
 	"github.com/mappu/miqt/qt"
 	"github.com/mappu/miqt/qt/mainthread"
 )
+
+var appQuitting atomic.Bool   // import "sync/atomic"
+var appQuitFilter *quitFilter // keep a global to prevent GC
 
 // postToUI runs fn on the Qt event loop (next tick) using a single-shot QTimer.
 // It can be parent to any QObject (e.g., the window) so it won't be GC'd.
@@ -225,4 +229,18 @@ func SanitizeString(s string) string {
 		}
 	}
 	return b.String()
+}
+
+type quitFilter struct{ *qt.QObject }
+
+func newQuitFilter() *quitFilter {
+	f := &quitFilter{QObject: qt.NewQObject()}
+	f.OnEventFilter(func(super func(*qt.QObject, *qt.QEvent) bool, watched *qt.QObject, e *qt.QEvent) bool {
+		if e.Type() == qt.QEvent__Quit {
+			log.Println("QEvent::Quit caught early; marking appQuitting")
+			appQuitting.Store(true)
+		}
+		return super(watched, e)
+	})
+	return f
 }
