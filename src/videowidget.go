@@ -21,7 +21,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"unsafe"
 
 	"github.com/mappu/miqt/qt"
@@ -134,6 +136,87 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 		srcRect := qt.NewQRect4(0, 0, srcW, srcH)
 		p.SetRenderHint2(qt.QPainter__SmoothPixmapTransform, true)
 		p.DrawImage2(dest, img, srcRect)
+		// --- overlays ---
+		if w.owner != nil {
+			// 4.a) Health chip (0–5), top-left under the title
+			if globalConfig.HealthChip {
+				_, _, _, health := w.owner.MetricsSnapshot()
+				// chip geometry
+				const pad = 8
+				const chipH = 22
+				barW, gap := 12, 2
+				chipW := pad + 5*barW + 4*gap + pad // total width = L pad + bars + gaps + R pad
+				// place at top-right, keep same Y logic re: title label
+				x := w.Width() - chipW - 2
+				y := 2
+				//if w.titleLbl != nil && w.titleLbl.IsVisible() {
+				//	y = w.titleLbl.Y() + w.titleLbl.Height() + 6
+				//}
+
+				// background
+				bg := qt.NewQColor11(0, 0, 0, 160)
+				pen := qt.NewQPen3(qt.NewQColor11(255, 255, 255, 60))
+				pen.SetWidth(1)
+				p.SetPenWithPen(pen)
+				p.SetBrush(qt.NewQBrush11(bg, qt.SolidPattern))
+				rect := qt.NewQRect4(x, y, chipW, chipH)
+				p.DrawRoundedRect3(rect, 6, 6)
+
+				// 5 mini-bars (2px gap)
+				filled := health
+				for i := 0; i < 5; i++ {
+					bx := x + pad + i*(barW+gap)
+					by := y + 4
+					bw := barW
+					bh := chipH - 8
+					col := qt.NewQColor11(80, 80, 80, 220) // off
+					if i < filled {
+						// greenish gradient by level
+						switch filled {
+						case 5:
+							col = qt.NewQColor11(0, 200, 120, 240)
+						case 4:
+							col = qt.NewQColor11(80, 200, 0, 240)
+						case 3:
+							col = qt.NewQColor11(200, 180, 0, 240)
+						case 2:
+							col = qt.NewQColor11(220, 120, 0, 240)
+						default:
+							col = qt.NewQColor11(220, 0, 0, 240)
+						}
+					}
+					p.FillRect6(qt.NewQRect4(bx, by, bw, bh), col)
+				}
+			}
+
+			// 4.b) Stats text (bottom-left)
+			if globalConfig.ShowFPS || globalConfig.ShowBitrate || globalConfig.ShowDrops {
+				fps, kbps, drops, _ := w.owner.MetricsSnapshot()
+				parts := []string{}
+				if globalConfig.ShowFPS {
+					parts = append(parts, fmt.Sprintf("FPS: %.1f", fps))
+				}
+				if globalConfig.ShowBitrate {
+					parts = append(parts, fmt.Sprintf("Bitrate: %.1f kbps", kbps))
+				}
+				if globalConfig.ShowDrops {
+					parts = append(parts, fmt.Sprintf("Drops: %.1f%%", drops))
+				}
+				if len(parts) > 0 {
+					txt := strings.Join(parts, "  |  ")
+					// measure and draw a pill background
+					fm := qt.NewQFontMetrics(p.Font())
+					tw := fm.BoundingRectWithText(txt).Width() + 16
+					th := fm.Height() + 8
+					x := 8
+					y := w.Height() - th - 8
+					p.FillRect6(qt.NewQRect4(x, y, tw, th), qt.NewQColor11(0, 0, 0, 150))
+					p.SetPenWithPen(qt.NewQPen3(qt.NewQColor11(255, 255, 255, 230)))
+					p.DrawText2(qt.NewQPoint2(x+8, y+th-8), txt)
+				}
+			}
+		}
+
 	})
 	w.SetMouseTracking(true) // track hover to update resize cursor
 

@@ -6,7 +6,7 @@ import (
 	"github.com/mappu/miqt/qt"
 )
 
-// --- add near other config types ---
+// formation struct
 type Formation struct {
 	Name  string          `yaml:"name"`
 	Items []FormationItem `yaml:"items"`
@@ -27,7 +27,7 @@ func (t *TrayController) installFormationsMenu(root *qt.QMenu) {
 		t.formMenu = qt.NewQMenu3("Formations")
 		t.formSubmenus = map[string]*qt.QMenu{}
 	}
-	// MOUNT ONLY ONCE per root build, at the exact place you call this.
+	// MOUNT ONLY ONCE
 	if !t.formMenuMounted {
 		addAct(root, t.formMenu.MenuAction()) // ← put it in-place now
 		t.formMenuMounted = true
@@ -62,16 +62,7 @@ func (t *TrayController) rebuildFormationsList() {
 		act.SetCheckable(true)
 		act.SetChecked(t.cfg.LastFormation == f.Name)
 
-		// <<< THIS is the key: clicking the submenu name (opening it) applies formation
-		// sub.OnAboutToShow(func() {
-		// 	if t.cfg.LastFormation != f.Name {
-		// 		t.applyFormation(f)
-		// 		t.cfg.LastFormation = f.Name
-		// 		_ = SaveConfig()
-		// 		t.refreshFormationChecks(f.Name) // update ticks without rebuilding
-		// 	}
-		// })
-
+		// apply formation
 		applyA := qt.NewQAction2("Apply")
 		applyA.OnTriggered(func() {
 			t.applyFormation(f)
@@ -234,7 +225,7 @@ func (t *TrayController) saveFormationInteractive() {
 	_ = SaveConfig()
 
 	// refresh menu now that list changed
-	// (assuming you have the root menu handy; if not, pass it through or rebuild tray)
+	// (assuming we have the root menu handy; if not, pass it through or rebuild tray)
 	if t.tray != nil && t.tray.ContextMenu() != nil {
 		t.installFormationsMenu(t.tray.ContextMenu())
 	}

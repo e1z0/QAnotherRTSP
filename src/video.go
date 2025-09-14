@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -312,6 +313,17 @@ func (w *CamWindow) openAndDecode() error {
 		return fmt.Errorf("open video: %w", err)
 	}
 
+	// initialize PTS gap estimator
+	w.pktPtsInited = false
+	tb := vst.TimeBase()
+	w.tbNum, w.tbDen = tb.Num(), tb.Den()
+
+	r := vst.AvgFrameRate()
+	if r.Num() <= 0 || r.Den() <= 0 {
+		r = vctx.Framerate() // fallback
+	}
+	w.fpsNom, w.fpsDen = r.Num(), r.Den()
+
 	// --- audio decoder ---
 	var (
 		aCtx    *astiav.CodecContext
@@ -431,11 +443,55 @@ func (w *CamWindow) openAndDecode() error {
 		}
 
 		if pkt.StreamIndex() == vIdx {
+			if globalConfig.ShowDrops { // if frame drop display is enabled we will start to collect the samples
+				// accumulate payload size even before decode
+				atomic.AddInt64(&w.bytesVideo, int64(pkt.Size()))
+				// --- PTS-based gap estimator ---
+				pts := pkt.Pts()
+				if pts <= 0 { // AV_NOPTS_VALUE or missing
+					pts = pkt.Dts()
+				}
+				if pts > 0 && w.tbDen > 0 && w.fpsNom > 0 && w.fpsDen > 0 {
+					if !w.pktPtsInited {
+						w.lastPktPTS = pts
+						w.pktPtsInited = true
+					} else {
+						dPTS := pts - w.lastPktPTS
+						if dPTS > 0 {
+							deltaSec := float64(dPTS) * float64(w.tbNum) / float64(w.tbDen)
+							frameDur := float64(w.fpsDen) / float64(w.fpsNom)
+							// Ignore absurd gaps (seek/reconnect) and only count realistic misses
+							if deltaSec <= 3.0 && frameDur > 0 {
+								// expected frames between those two packets
+								exp := int(math.Round(deltaSec / frameDur))
+								// assume ~1 frame per packet → missing = expected - 1
+								miss := exp - 1
+								if miss > 0 && miss < 120 { // clamp
+									atomic.AddInt64(&w.framesDropped, int64(miss))
+								}
+							}
+						}
+						w.lastPktPTS = pts
+					}
+				}
+			}
 			if err := vctx.SendPacket(pkt); err == nil {
 				for {
-					if err := vctx.ReceiveFrame(vf); err != nil {
+					err := vctx.ReceiveFrame(vf)
+					// EAGAIN: no more frames for this packet; not a drop
+					if errors.Is(err, astiav.ErrEagain) || errors.Is(err, astiav.ErrEof) {
 						break
 					}
+					if err != nil {
+						// count hard decode errors as "drops"
+						if globalConfig.ShowDrops {
+							atomic.AddInt64(&w.decodeErrs, 1)
+							atomic.AddInt64(&w.framesDropped, 1)
+						}
+						break
+					}
+
+					// success...
 
 					// (optional) log the source geometry
 					if false {
@@ -452,6 +508,7 @@ func (w *CamWindow) openAndDecode() error {
 						continue
 					}
 					w.buf.put(bw, bh, bgra)
+					atomic.AddInt64(&w.framesDecoded, 1) // bump the frame counter
 					w.lastAdvance = time.Now()
 					lastProgress = time.Now()
 

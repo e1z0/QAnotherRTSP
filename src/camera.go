@@ -23,6 +23,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/mappu/miqt/qt"
@@ -61,6 +62,25 @@ type CamWindow struct {
 	tmpStride     int
 	repaintTimer  *qt.QTimer
 	contextHooked bool
+	// some statistics metrics / overlay
+	framesDecoded int64 // total decoded frames
+	bytesVideo    int64 // total video bytes seen (via pkt.Size())
+	framesDropped int64 // best-effort estimate (decode errors etc.)
+	decodeErrs    int64
+	fps           float64
+	bitrateKbps   float64
+	dropsPct      float64
+	health        int32 // 0..5
+	lastMAt       time.Time
+	lastMFrames   int64
+	lastMBytes    int64
+	metricsTimer  *qt.QTimer
+	lastMDrops    int64
+	// timing for PTS-based gap estimator
+	tbNum, tbDen   int   // stream timebase (vst.TimeBase)
+	fpsNom, fpsDen int   // stream fps rational (AvgFrameRate or vctx.Framerate)
+	lastPktPTS     int64 // last seen *packet* PTS (or DTS fallback)
+	pktPtsInited   bool
 }
 
 func (w *CamWindow) SetOnClosed(fn func(int)) { w.onClosed = fn }
@@ -234,6 +254,93 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 		}
 	})
 	t.Start2()
+
+	w.lastMAt = time.Now()
+	w.metricsTimer = qt.NewQTimer()
+	w.metricsTimer.SetInterval(1000) // 1s
+	w.metricsTimer.OnTimeout(func() {
+		now := time.Now()
+		dt := now.Sub(w.lastMAt).Seconds()
+		if dt <= 0 {
+			return
+		}
+		fd := atomic.LoadInt64(&w.framesDecoded)
+		by := atomic.LoadInt64(&w.bytesVideo)
+		dr := atomic.LoadInt64(&w.framesDropped)
+
+		dF := fd - w.lastMFrames
+		dB := by - w.lastMBytes
+		dD := dr - w.lastMDrops
+
+		if dF < 0 {
+			dF = 0
+		}
+		if dB < 0 {
+			dB = 0
+		}
+		if dD < 0 {
+			dD = 0
+		}
+
+		w.fps = float64(dF) / dt
+		// bits/sec -> kbps
+		w.bitrateKbps = (float64(dB) * 8.0 / dt) / 1000.0
+		den := dF + dD
+		if den > 0 {
+			pct := 100.0 * float64(dD) / float64(den)
+			if pct < 0 {
+				pct = 0
+			}
+			if pct > 100 {
+				pct = 100
+			}
+			w.dropsPct = pct
+		} else {
+			w.dropsPct = 0
+		}
+
+		// simple health heuristic 0..5
+		score := 0
+		switch {
+		case w.fps >= 24:
+			score = 5
+		case w.fps >= 15:
+			score = 4
+		case w.fps >= 5:
+			score = 3
+		case w.fps > 0:
+			score = 2
+		default: // stalled
+			score = 0
+		}
+		if w.dropsPct > 10 {
+			if score > 0 {
+				score--
+			}
+		}
+		atomic.StoreInt32(&w.health, int32(score))
+
+		w.lastMFrames = fd
+		w.lastMBytes = by
+		w.lastMDrops = dr
+		w.lastMAt = now
+
+		// ask widget to repaint overlays even if frame size unchanged
+		if w.view != nil && w.view.QWidget != nil {
+			w.view.Update() // safe to call from UI thread (timer is UI)
+		}
+	})
+	w.metricsTimer.Start2()
+
+	// ensure timer stops when window closes
+	w.win.OnDestroyed(func() {
+		if w.metricsTimer != nil {
+			w.metricsTimer.Stop()
+			w.metricsTimer.DeleteLater()
+			w.metricsTimer = nil
+		}
+	})
+
 	return w, nil
 }
 
@@ -417,4 +524,8 @@ func (w *CamWindow) restartDecoder(reason string) {
 
 	log.Printf("[%s] restarting decoder (%s)", w.cfg.Name, reason)
 	go w.decodeLoop()
+}
+
+func (w *CamWindow) MetricsSnapshot() (fps, kbps, drops float64, health int) {
+	return w.fps, w.bitrateKbps, w.dropsPct, int(atomic.LoadInt32(&w.health))
 }

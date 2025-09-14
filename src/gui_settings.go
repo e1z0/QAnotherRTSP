@@ -47,7 +47,13 @@ type SettingsDialog struct {
 	alwaysOnTopAllCh   *qt.QCheckBox
 	activateOnTrayCh   *qt.QCheckBox
 	activateOnWinCh    *qt.QCheckBox
-	cams               []CameraConfig
+	// overlays
+	healthChipCh *qt.QCheckBox
+	fpsCh        *qt.QCheckBox
+	bitrateCh    *qt.QCheckBox
+	dropsCh      *qt.QCheckBox
+	// Cameras
+	cams []CameraConfig
 }
 
 // ShowSettingsDialog opens the modal dialog.
@@ -110,6 +116,23 @@ func newSettingsDialog(parent *qt.QWidget) *SettingsDialog {
 	d.activateOnWinCh = qt.NewQCheckBox4("Activate all cameras on one camera click", nil)
 	d.activateOnWinCh.SetChecked(globalConfig.ActiveOnWin)
 	settingsForm.AddRow3("", d.activateOnWinCh.QWidget)
+
+	// --- Overlays ---
+	d.healthChipCh = qt.NewQCheckBox4("Show health chip (0–5)", nil)
+	d.healthChipCh.SetChecked(globalConfig.HealthChip)
+	settingsForm.AddRow3("", d.healthChipCh.QWidget)
+
+	d.fpsCh = qt.NewQCheckBox4("Overlay FPS", nil)
+	d.fpsCh.SetChecked(globalConfig.ShowFPS)
+	settingsForm.AddRow3("", d.fpsCh.QWidget)
+
+	d.bitrateCh = qt.NewQCheckBox4("Overlay bitrate", nil)
+	d.bitrateCh.SetChecked(globalConfig.ShowBitrate)
+	settingsForm.AddRow3("", d.bitrateCh.QWidget)
+
+	d.dropsCh = qt.NewQCheckBox4("Overlay dropped frames %", nil)
+	d.dropsCh.SetChecked(globalConfig.ShowDrops)
+	settingsForm.AddRow3("", d.dropsCh.QWidget)
 
 	settingsPage.SetLayout(settingsForm.QLayout)
 
@@ -350,6 +373,10 @@ func (d *SettingsDialog) onSave() {
 	globalConfig.AlwaysOnTopAll = d.alwaysOnTopAllCh.IsChecked()
 	globalConfig.ActiveOnTray = d.activateOnTrayCh.IsChecked()
 	globalConfig.ActiveOnWin = d.activateOnWinCh.IsChecked()
+	globalConfig.HealthChip = d.healthChipCh.IsChecked()
+	globalConfig.ShowFPS = d.fpsCh.IsChecked()
+	globalConfig.ShowBitrate = d.bitrateCh.IsChecked()
+	globalConfig.ShowDrops = d.dropsCh.IsChecked()
 	configMu.Unlock()
 
 	// Apply immediately to open windows (frameless ↔ titled)
