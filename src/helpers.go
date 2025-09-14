@@ -74,6 +74,16 @@ func genID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// find camera by it's id
+func findCameraIndexByID(cfg *AppConfig, id string) int {
+	for i := range cfg.Cameras {
+		if cfg.Cameras[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
 // DictPairs returns key=value ffmpeg settings pairs for logging.
 func DictPairs(d *astiav.Dictionary) []string {
 	if d == nil {
@@ -243,4 +253,44 @@ func newQuitFilter() *quitFilter {
 		return super(watched, e)
 	})
 	return f
+}
+
+func promptText(title, label string) (string, bool) {
+	d := qt.NewQDialog(nil)
+	d.SetWindowTitle(title)
+	in := qt.NewQLineEdit(nil)
+	in.SetMinimumWidth(280)
+
+	lbl := qt.NewQLabel6(label, nil, 0)
+	ok := qt.NewQPushButton5("Save", nil)
+	cc := qt.NewQPushButton5("Cancel", nil)
+
+	ok.OnClicked(func() { d.Accept() })
+	cc.OnClicked(func() { d.Reject() })
+
+	row1 := qt.NewQVBoxLayout(nil)
+	row1.AddWidget(lbl.QWidget)
+	row1.AddWidget(in.QWidget)
+
+	btns := qt.NewQHBoxLayout(nil)
+	btns.AddStretch()
+	btns.AddWidget(ok.QWidget)
+	btns.AddWidget(cc.QWidget)
+
+	root := qt.NewQVBoxLayout(nil)
+	root.AddLayout(row1.QLayout)
+	root.AddLayout(btns.QLayout)
+	d.SetLayout(root.QLayout)
+
+	if d.Exec() == int(qt.QDialog__Accepted) {
+		return strings.TrimSpace(in.Text()), true
+	}
+	return "", false
+}
+
+func addAct(m *qt.QMenu, a *qt.QAction) { m.AddActions([]*qt.QAction{a}) }
+func addSep(m *qt.QMenu) {
+	sep := qt.NewQAction2("")
+	sep.SetSeparator(true)
+	addAct(m, sep)
 }

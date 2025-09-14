@@ -37,6 +37,12 @@ type TrayController struct {
 	cfg     *AppConfig
 	wins    *[]*CamWindow
 	actions []*qt.QAction // one per camera index
+	// formations UI
+	formMenu        *qt.QMenu
+	formSaveAct     *qt.QAction
+	formDelMenu     *qt.QMenu
+	formSubmenus    map[string]*qt.QMenu
+	formMenuMounted bool
 }
 
 func NewTrayController(cfg *AppConfig, winsA *[]*CamWindow) *TrayController {
@@ -90,6 +96,8 @@ func (t *TrayController) rebuild() {
 
 	menu := qt.NewQMenu(nil)
 
+	t.formMenuMounted = false
+
 	cams := qt.NewQMenu4("Cameras", menu.QWidget)
 	t.actions = make([]*qt.QAction, len(t.cfg.Cameras))
 
@@ -124,6 +132,11 @@ func (t *TrayController) rebuild() {
 	menu.AddActions(t.actions) // as main menu
 	menu.AddSeparator()
 
+	if t.formMenu != nil {
+		t.rebuildFormationsList() // refresh content only
+	} else {
+		t.installFormationsMenu(menu) // formation menu
+	}
 	optionsMenu := qt.NewQMenu(nil)
 	optionsMenu.SetTitle("Settings")
 

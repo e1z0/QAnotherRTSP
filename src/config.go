@@ -53,6 +53,8 @@ type AppConfig struct {
 	AlwaysOnTopAll  bool           `yaml:"always_on_top_all,omitempty"` //all camera windows are always on top
 	ActiveOnTray    bool           `yaml:"activate_on_tray,omitempty"`
 	ActiveOnWin     bool           `yaml:"activate_in_win,omitempty"`
+	Formations      []Formation    `yaml:"formations,omitempty"`
+	LastFormation   string         `yaml:"last_formation,omitempty"`
 }
 
 type CameraConfig struct {
