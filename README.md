@@ -28,6 +28,8 @@ Thank you for your attention, and I wish you an enjoyable experience! :-)
 * **Per-camera tuning**: RTSP over TCP, always-on-top, mute, stretch, and an FFmpeg params field (-fOPTION=…, -cOPTION=…) for advanced input/decoder options.
 * **Hardware decode**: VideoToolbox on macOS (auto-fallback to software when unsupported).
 * **Simple config**: settings saved to a YAML file in your user config directory.
+* **Formations (window presets)** — save/restore which cameras are open and where their windows are placed.
+* **Diagnostics overlays** — per‑camera health chip (0–5) and optional FPS / bitrate / Drops % text.
 
 In short: **a fast, flexible RTSP viewer that lets you manage multiple feeds from the tray and tweak everything on the fly.**
 
@@ -81,6 +83,32 @@ The Settings window is a dialog with three tabs and a footer:
 > **Note:** “Save” persists changes to `settings.yml`. The live add/edit/remove effects happen right away so you can verify results instantly.
 
 ---
+
+---
+
+## Formations (Window Presets)
+
+**What it is.** A *Formation* is a named layout. It remembers which camera windows are open and their geometry (x/y/width/height). Switch between workflows instantly (e.g., *Office*, *Yard*, *Night*).
+
+**Where to find it.** Open the **tray icon → Formations**. You’ll see:
+- **Save current as…** — prompts for a name and saves the current layout (overwrites if that name already exists).
+- One **submenu per formation**:
+  - The submenu title has a **✓ checkmark** when that formation is active.
+  - **Apply** - Applies the formation
+  - **Save (overwrite)** — update the formation with current window positions.
+  - **Delete** — remove the formation from the config.
+
+> Loading happens when you open a formation’s submenu (click its title). You immediately get Save/Delete actions in that submenu.
+
+**What gets saved**
+- Open/closed state of each camera window
+- Window X/Y position, Width/Height
+- Camera is matched by its `ID` (falls back to `Name` if `ID` is empty)
+
+**Behavior**
+- Applying a formation opens and positions all listed windows, and closes other camera windows.
+- Tray checkboxes are synced to the loaded formation.
+- Config is saved after apply/overwrite/delete.
 
 ## Tray Menu
 
@@ -156,6 +184,45 @@ Each camera’s **FFmpeg params** field accepts extra decoder/open options in a 
 - For 10-bit HEVC (if supported): `-chwaccel_output_format=p010le`.
 - If HW decode isn’t supported on your machine/stream, the app automatically falls back to software.
 
+
+---
+
+## Diagnostics Overlays
+
+Turn these on/off in **Settings → Overlays**:
+- **Show health chip (0–5)** — a five‑bar indicator shown at the **top‑right** of each video window:
+  - **5**: smooth (≥24 FPS), **4**: good (≥15 FPS), **3**: OK (≥5 FPS), **2**: low (>0), **0**: stalled.
+  - The level is reduced by one step when Drops% is high in the last second.
+- **Overlay FPS** — frames per second averaged over ~1s.
+- **Overlay bitrate** — kbps computed from video packets only.
+- **Overlay dropped frames %** — percentage of **missing/failed** frames during the last second.
+
+**How Drops% works (short version)**
+- Normal decoder churn (`EAGAIN` / `EOF`) does **not** count as a drop.
+- We count **hard decode errors** and **implied missing frames** using packet **PTS/DTS** gaps:
+  - If timestamps jump by more than one frame interval (but less than ~2s), we treat the gap as missing frames.
+- The overlay shows: `drops% = missing / (shown + missing)` over the last second, clamped to 0–100%.
+- Smooth, steady cameras often show **0.0%**; brief network hiccups make it non‑zero for a moment.
+
+**Rendering positions**
+- **Health chip:** top right.
+- **Stats text:** bottom‑left with a subtle shadow for readability.
+
+**Performance**
+- Overlays cost very little (simple draw calls). Metrics update once per second.
+
+---
+
+## Enabling / Disabling (Settings)
+
+Open **Settings** (GUI) and toggle under **Overlays**:
+- “Show health chip (0–5)”
+- “Overlay FPS”
+- “Overlay bitrate”
+- “Overlay dropped frames %”
+
+Changes apply immediately and persist to the YAML config.
+
 ---
 
 ## Troubleshooting
@@ -181,6 +248,9 @@ Each camera’s **FFmpeg params** field accepts extra decoder/open options in a 
 - **Drag + Alt** — temporarily disable snapping/stacking while moving a borderless window.
 - **Resize from corners/edges** — hover near edges to get the resize cursor.
 - **Name overlay** (top-left) appears only in borderless mode; it updates when you rename a camera.
+- **Formations + multi‑monitor:** Formations restore geometry on the current display setup. After monitor changes, apply the formation and re‑save (overwrite) if needed.
+- **Meaning of Drops%:** It’s a best‑effort signal derived from timestamps; it won’t necessarily match values reported by your camera firmware.
+- **Window features:** Title visibility, Always‑on‑Top, and snapping work alongside formations.
 
 ---
 
