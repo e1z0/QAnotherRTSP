@@ -56,10 +56,11 @@ type AppConfig struct {
 	Formations      []Formation    `yaml:"formations,omitempty"`
 	LastFormation   string         `yaml:"last_formation,omitempty"`
 	// overlays
-	HealthChip  bool `yaml:"health_chip,omitempty"` // show 0–5 health chip on each camera
-	ShowFPS     bool `yaml:"show_fps,omitempty"`
-	ShowBitrate bool `yaml:"show_bitrate,omitempty"`
-	ShowDrops   bool `yaml:"show_drops,omitempty"`
+	HealthChip   bool `yaml:"health_chip,omitempty"` // show 0–5 health chip on each camera
+	ShowFPS      bool `yaml:"show_fps,omitempty"`
+	ShowBitrate  bool `yaml:"show_bitrate,omitempty"`
+	ShowDrops    bool `yaml:"show_drops,omitempty"`
+	ShowCPUUsage bool `yaml:"show_cpu,omitempty"` // overlay "CPU: xx%"
 }
 
 type CameraConfig struct {

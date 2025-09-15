@@ -475,6 +475,7 @@ func (w *CamWindow) openAndDecode() error {
 					}
 				}
 			}
+			pktStart := time.Now() // start measure cpu utilization
 			if err := vctx.SendPacket(pkt); err == nil {
 				for {
 					err := vctx.ReceiveFrame(vf)
@@ -500,21 +501,28 @@ func (w *CamWindow) openAndDecode() error {
 							w.cfg.Name, vf.PixelFormat().String(),
 							vf.Width(), vf.Height(), ls[0], ls[1], ls[2])
 					}
-
+					// measure usage on colorspace convert (this is usually the hottest bit)
+					t0 := time.Now()
 					bw, bh, bgra, err := scaler.toBGRA(vf)
+					atomic.AddInt64(&w.busyNS, time.Since(t0).Nanoseconds())
 					if err != nil {
 						log.Printf("[%s] toBGRA error: %v", w.cfg.Name, err)
 						vf.Unref()
 						continue
 					}
+					// copy into our buffer (still CPU)
+					t1 := time.Now()
 					w.buf.put(bw, bh, bgra)
-					atomic.AddInt64(&w.framesDecoded, 1) // bump the frame counter
+					atomic.AddInt64(&w.busyNS, time.Since(t1).Nanoseconds()) // measure cpu usage
+					atomic.AddInt64(&w.framesDecoded, 1)                     // bump the frame counter
 					w.lastAdvance = time.Now()
 					lastProgress = time.Now()
 
 					vf.Unref()
 				}
 			}
+			// cpu usage: include a little for avcodec plumbing itself
+			atomic.AddInt64(&w.busyNS, time.Since(pktStart).Nanoseconds()/10)
 		}
 
 		pkt.Unref()

@@ -140,7 +140,7 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 		if w.owner != nil {
 			// 4.a) Health chip (0–5), top-left under the title
 			if globalConfig.HealthChip {
-				_, _, _, health := w.owner.MetricsSnapshot()
+				_, _, _, _, health := w.owner.MetricsSnapshot()
 				// chip geometry
 				const pad = 8
 				const chipH = 22
@@ -187,8 +187,8 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 			}
 
 			// 4.b) Stats text (bottom-left)
-			if globalConfig.ShowFPS || globalConfig.ShowBitrate || globalConfig.ShowDrops {
-				fps, kbps, drops, _ := w.owner.MetricsSnapshot()
+			if globalConfig.ShowFPS || globalConfig.ShowBitrate || globalConfig.ShowDrops || globalConfig.ShowCPUUsage {
+				fps, kbps, drops, _, _ := w.owner.MetricsSnapshot()
 				parts := []string{}
 				if globalConfig.ShowFPS {
 					parts = append(parts, fmt.Sprintf("FPS: %.1f", fps))
@@ -199,6 +199,11 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 				if globalConfig.ShowDrops {
 					parts = append(parts, fmt.Sprintf("Drops: %.1f%%", drops))
 				}
+
+				if globalConfig.ShowCPUUsage {
+					parts = append(parts, fmt.Sprintf("CPU: %.0f%%", w.owner.cpuPct))
+				}
+
 				if len(parts) > 0 {
 					txt := strings.Join(parts, "  |  ")
 					// measure and draw a pill background

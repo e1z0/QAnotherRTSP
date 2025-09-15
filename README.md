@@ -29,7 +29,7 @@ Thank you for your attention, and I wish you an enjoyable experience! :-)
 * **Hardware decode**: VideoToolbox on macOS (auto-fallback to software when unsupported).
 * **Simple config**: settings saved to a YAML file in your user config directory.
 * **Formations (window presets)** — save/restore which cameras are open and where their windows are placed.
-* **Diagnostics overlays** — per‑camera health chip (0–5) and optional FPS / bitrate / Drops % text.
+* **Diagnostics overlays** — per‑camera health chip (0–5) and optional FPS / bitrate / Drops % / CPU Usage text.
 
 In short: **a fast, flexible RTSP viewer that lets you manage multiple feeds from the tray and tweak everything on the fly.**
 
@@ -196,6 +196,7 @@ Turn these on/off in **Settings → Overlays**:
 - **Overlay FPS** — frames per second averaged over ~1s.
 - **Overlay bitrate** — kbps computed from video packets only.
 - **Overlay dropped frames %** — percentage of **missing/failed** frames during the last second.
+- **Overlay CPU** - The overlay reports the **busy fraction** of one core of CPU:
 
 **How Drops% works (short version)**
 - Normal decoder churn (`EAGAIN` / `EOF`) does **not** count as a drop.
@@ -203,6 +204,40 @@ Turn these on/off in **Settings → Overlays**:
   - If timestamps jump by more than one frame interval (but less than ~2s), we treat the gap as missing frames.
 - The overlay shows: `drops% = missing / (shown + missing)` over the last second, clamped to 0–100%.
 - Smooth, steady cameras often show **0.0%**; brief network hiccups make it non‑zero for a moment.
+
+**How CPU usage is measured**
+The overlay reports the **busy fraction** of one core:
+1. The camera’s decode path accumulates “busy nanoseconds” while it performs CPU‑intensive work:
+   - codec output handling
+   - colorspace conversion to BGRA
+   - copying the frame into the UI buffer
+2. Every ~1s the app computes:
+   \[ `cpu% = busy_delta_ns / (elapsed_seconds * 1e9) * 100` \]
+3. The value is **clamped** to a reasonable range (e.g., 0–400%) to avoid runaway spikes.
+
+Why this approach?
+- It’s **portable** across OSes (no per‑thread OS accounting required).
+- It correlates well with what actually slows the app: per‑camera decode + convert + copy time.
+- FFmpeg may use additional worker threads; the overlay still gives a **useful per‑camera estimate** of load.
+
+Limitations
+- The overlay measures **app busy time**, not total system CPU usage.
+- FFmpeg may spawn additional worker threads; the app’s overlay number is a **conservative estimate** of total per‑camera CPU usage.
+- On extremely bursty streams, numbers can momentarily spike; they should settle within a second.
+- The overlay draw itself is very cheap (simple text rendering).
+
+How to read the number
+- **0–20%**: very light stream (low resolution/fps or hardware‑friendly encoding).
+- **20–60%**: normal 1080p H.264, stable network, no scaling bottlenecks.
+- **60–100%**: heavy stream (e.g., 4K, HEVC, or aggressive scaling).
+- **>100%**: multi‑threaded decoding is using more than one core’s worth of CPU for this camera.
+
+Tips to reduce CPU cost
+- **Lower resolution/fps** on the camera or switch to a **sub‑stream** for live view.
+- Prefer **H.264** over HEVC/H.265 when CPU is constrained (or ensure hardware decode).
+- Reduce scaling/conversion cost (use native pixel formats where possible).
+- Keep the window size close to the source size to minimize scaling work.
+- Avoid showing too many high‑FPS windows at once; use **Formations** to switch layouts.
 
 **Rendering positions**
 - **Health chip:** top right.

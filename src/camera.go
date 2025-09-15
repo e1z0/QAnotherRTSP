@@ -81,6 +81,10 @@ type CamWindow struct {
 	fpsNom, fpsDen int   // stream fps rational (AvgFrameRate or vctx.Framerate)
 	lastPktPTS     int64 // last seen *packet* PTS (or DTS fallback)
 	pktPtsInited   bool
+	// --- CPU load estimator (per camera) ---
+	busyNS      int64   // total busy nanoseconds accumulated
+	lastMBusyNS int64   // snapshot for delta-per-second
+	cpuPct      float64 // percent of one core, last interval
 }
 
 func (w *CamWindow) SetOnClosed(fn func(int)) { w.onClosed = fn }
@@ -281,6 +285,25 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 		if dD < 0 {
 			dD = 0
 		}
+
+		// cpu metrics
+		busy := atomic.LoadInt64(&w.busyNS)
+		dBusy := busy - w.lastMBusyNS
+		if dBusy < 0 {
+			dBusy = 0
+		}
+
+		if dt > 0 {
+			pct := (float64(dBusy) / (dt * 1e9)) * 100.0 // percent of one core
+			if pct < 0 {
+				pct = 0
+			}
+			if pct > 400 {
+				pct = 400
+			} // clamp (multi-threaded decoders could exceed 100)
+			w.cpuPct = pct
+		}
+		w.lastMBusyNS = busy
 
 		w.fps = float64(dF) / dt
 		// bits/sec -> kbps
@@ -526,6 +549,6 @@ func (w *CamWindow) restartDecoder(reason string) {
 	go w.decodeLoop()
 }
 
-func (w *CamWindow) MetricsSnapshot() (fps, kbps, drops float64, health int) {
-	return w.fps, w.bitrateKbps, w.dropsPct, int(atomic.LoadInt32(&w.health))
+func (w *CamWindow) MetricsSnapshot() (fps, kbps, drops, cpu float64, health int) {
+	return w.fps, w.bitrateKbps, w.dropsPct, w.cpuPct, int(atomic.LoadInt32(&w.health))
 }

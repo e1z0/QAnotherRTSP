@@ -52,6 +52,7 @@ type SettingsDialog struct {
 	fpsCh        *qt.QCheckBox
 	bitrateCh    *qt.QCheckBox
 	dropsCh      *qt.QCheckBox
+	cpuCh        *qt.QCheckBox
 	// Cameras
 	cams []CameraConfig
 }
@@ -133,6 +134,10 @@ func newSettingsDialog(parent *qt.QWidget) *SettingsDialog {
 	d.dropsCh = qt.NewQCheckBox4("Overlay dropped frames %", nil)
 	d.dropsCh.SetChecked(globalConfig.ShowDrops)
 	settingsForm.AddRow3("", d.dropsCh.QWidget)
+
+	d.cpuCh = qt.NewQCheckBox4("Overlay CPU usage", nil)
+	d.cpuCh.SetChecked(globalConfig.ShowCPUUsage)
+	settingsForm.AddRow3("", d.cpuCh.QWidget)
 
 	settingsPage.SetLayout(settingsForm.QLayout)
 
@@ -377,6 +382,7 @@ func (d *SettingsDialog) onSave() {
 	globalConfig.ShowFPS = d.fpsCh.IsChecked()
 	globalConfig.ShowBitrate = d.bitrateCh.IsChecked()
 	globalConfig.ShowDrops = d.dropsCh.IsChecked()
+	globalConfig.ShowCPUUsage = d.cpuCh.IsChecked()
 	configMu.Unlock()
 
 	// Apply immediately to open windows (frameless ↔ titled)
