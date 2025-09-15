@@ -146,12 +146,9 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 				const chipH = 22
 				barW, gap := 12, 2
 				chipW := pad + 5*barW + 4*gap + pad // total width = L pad + bars + gaps + R pad
-				// place at top-right, keep same Y logic re: title label
+				// place at top-right
 				x := w.Width() - chipW - 2
 				y := 2
-				//if w.titleLbl != nil && w.titleLbl.IsVisible() {
-				//	y = w.titleLbl.Y() + w.titleLbl.Height() + 6
-				//}
 
 				// background
 				bg := qt.NewQColor11(0, 0, 0, 160)

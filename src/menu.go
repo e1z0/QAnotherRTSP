@@ -132,11 +132,13 @@ func (t *TrayController) rebuild() {
 	menu.AddActions(t.actions) // as main menu
 	menu.AddSeparator()
 
-	if t.formMenu != nil {
-		t.rebuildFormationsList() // refresh content only
-	} else {
-		t.installFormationsMenu(menu) // formation menu
-	}
+	//if t.formMenu != nil {
+	//	t.rebuildFormationsList() // refresh content only
+	//} else {
+	//	t.installFormationsMenu(menu) // formation menu
+	//}
+	t.installFormationsMenu(menu)
+
 	optionsMenu := qt.NewQMenu(nil)
 	optionsMenu.SetTitle("Settings")
 
