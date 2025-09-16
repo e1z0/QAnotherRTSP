@@ -43,7 +43,7 @@ In short: **a fast, flexible RTSP viewer that lets you manage multiple feeds fro
 
 1. Launch the app.  
 2. If you have no cameras configured, the **Settings** window opens.  
-3. Add a camera in **Settings → Cameras → Add**, enter its U, NameRL and options, then **Save**.  
+3. Add a camera in **Settings → Cameras → Add**, enter its Name, URL and options, then **Save**.  
 4. The camera opens immediately and also appears in the tray menu.
 
 ---
