@@ -225,6 +225,7 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 		if w.isFullscreen || w.suppressSave {
 			return
 		}
+		log.Printf("[%s] window moved to %dx%d", w.cfg.Name, event.Pos().X(), event.Pos().Y())
 		w.saveTimer.Stop()
 		w.saveTimer.Start2()
 	})

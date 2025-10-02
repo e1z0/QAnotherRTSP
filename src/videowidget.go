@@ -250,7 +250,7 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 			return
 		}
 		if globalConfig.ActiveOnWin && !w.IsFullScreen() {
-			log.Printf("focus frameless")
+			log.Printf("focus frameless activated")
 			for _, w := range wins {
 				if w == nil {
 					continue
@@ -303,6 +303,8 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 			super(ev)
 			return
 		}
+		log.Printf("[%s] frameless window moved to %dx%d", w.owner.cfg.Name, ev.Pos().X(), ev.Pos().Y())
+
 		top := w.QWidget.Window()
 		if top == nil {
 			super(ev)
