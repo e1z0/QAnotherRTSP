@@ -177,6 +177,11 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 		if w == nil || w.win == nil || w.closing {
 			return
 		}
+		// ---- skip persisting if window looks fullscreen-ish ----
+		if looksFullscreenish(w.win) {
+			// don’t write this transient geometry
+			return
+		}
 		// Persist to config.yml
 		if err := UpdateCameraGeometry(w.idKey, w.win.Pos().X(), w.win.Pos().Y(), w.win.Size().Width(), w.win.Size().Height()); err != nil {
 			log.Printf("save geometry failed: %v", err)
@@ -222,7 +227,9 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 
 	// Restart debounce whenever the user moves or resizes the window
 	win.OnMoveEvent(func(super func(event *qt.QMoveEvent), event *qt.QMoveEvent) {
-		if w.isFullscreen || w.suppressSave {
+		//if w.isFullscreen || w.suppressSave {
+		if w.isFullscreen || w.suppressSave || win.IsFullScreen() || win.IsMaximized() {
+
 			return
 		}
 		log.Printf("[%s] window moved to %dx%d", w.cfg.Name, event.Pos().X(), event.Pos().Y())
@@ -231,7 +238,9 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 	})
 
 	win.OnResizeEvent(func(super func(event *qt.QResizeEvent), event *qt.QResizeEvent) {
-		if w.isFullscreen || w.suppressSave {
+		//if w.isFullscreen || w.suppressSave {
+		if w.isFullscreen || w.suppressSave || win.IsFullScreen() || win.IsMaximized() {
+
 			return
 		}
 		w.saveTimer.Stop()
@@ -448,7 +457,6 @@ func (w *CamWindow) ToggleFullscreen() {
 			t.DeleteLater()
 		})
 		t.Start2()
-
 		return
 	}
 
@@ -459,10 +467,12 @@ func (w *CamWindow) ToggleFullscreen() {
 		w.win.SetGeometry(w.prevX, w.prevY, w.prevW, w.prevH)
 	}
 	w.isFullscreen = false
+	w.saveTimer.Stop()
+	w.suppressSave = true
 
 	t := qt.NewQTimer()
 	t.SetSingleShot(true)
-	t.SetInterval(0)
+	t.SetInterval(750)
 	t.OnTimeout(func() {
 		w.suppressSave = false
 		t.DeleteLater()
@@ -552,4 +562,39 @@ func (w *CamWindow) restartDecoder(reason string) {
 
 func (w *CamWindow) MetricsSnapshot() (fps, kbps, drops, cpu float64, health int) {
 	return w.fps, w.bitrateKbps, w.dropsPct, w.cpuPct, int(atomic.LoadInt32(&w.health))
+}
+
+func looksFullscreenish(win *qt.QMainWindow) bool {
+	if win == nil {
+		return false
+	}
+	if win.IsFullScreen() || win.IsMaximized() {
+		return true
+	}
+	// Compare against the current screen’s *available* geometry
+	scr := win.Screen()
+	if scr == nil {
+		scr = qt.QGuiApplication_PrimaryScreen()
+	}
+	if scr == nil {
+		return false
+	}
+	sg := scr.AvailableGeometry() // excludes taskbar/dock
+	wg := win.Geometry()
+
+	// consider it fullscreen-ish if it occupies (≈) the whole screen
+	const tol = 8 // px tolerance
+	samePos := abs(wg.X()-sg.X()) <= tol && abs(wg.Y()-sg.Y()) <= tol
+	sameW := abs(wg.Width()-sg.Width()) <= tol
+	sameH := abs(wg.Height()-sg.Height()) <= tol
+	if samePos && sameW && sameH {
+		return true
+	}
+
+	// also treat >95% of each dimension as fullscreen-ish (frameless edge cases)
+	if wg.Width() >= int(float64(sg.Width())*0.95) &&
+		wg.Height() >= int(float64(sg.Height())*0.95) {
+		return true
+	}
+	return false
 }
