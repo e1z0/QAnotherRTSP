@@ -370,8 +370,8 @@ func (w *CamWindow) openAndDecode() error {
 			return
 		}
 
-		// Flush and write trailer
-		if w.aEncCtx != nil {
+		// Flush audio encoder (if any)
+		if w.aEncCtx != nil && w.aEncStream != nil {
 			_ = w.aEncCtx.SendFrame(nil)
 			for {
 				pkt := astiav.AllocPacket()
@@ -379,19 +379,26 @@ func (w *CamWindow) openAndDecode() error {
 					pkt.Free()
 					break
 				}
-				// rescale and mux final packets
+
 				pkt.SetStreamIndex(w.aEncStream.Index())
 				pkt.RescaleTs(
 					w.aEncCtx.TimeBase(),
 					w.aEncStream.TimeBase(),
 				)
-				_ = w.recCtx.WriteInterleavedFrame(pkt)
+
+				if err := w.recCtx.WriteInterleavedFrame(pkt); err != nil && !errors.Is(err, astiav.ErrEagain) {
+					log.Printf("[%s] recording: WriteInterleavedFrame (audio flush) error: %v", w.cfg.Name, err)
+				}
+
 				pkt.Unref()
 				pkt.Free()
 			}
 		}
 
-		_ = w.recCtx.WriteTrailer()
+		// Write trailer for container
+		if err := w.recCtx.WriteTrailer(); err != nil && !errors.Is(err, astiav.ErrEagain) {
+			log.Printf("[%s] recording: WriteTrailer error: %v", w.cfg.Name, err)
+		}
 
 		if w.recIO != nil {
 			_ = w.recIO.Close()
@@ -408,21 +415,21 @@ func (w *CamWindow) openAndDecode() error {
 			w.aEncFrame.Free()
 			w.aEncFrame = nil
 		}
-
 		if w.aSwr != nil {
 			w.aSwr.Free()
 			w.aSwr = nil
 		}
-
 		if w.aEncCtx != nil {
 			w.aEncCtx.Free()
 			w.aEncCtx = nil
 		}
-
+		w.aEncStream = nil
 		w.recStreamIx = nil
+		w.audioPts = 0
 
 		log.Printf("[%s] recording stopped", w.cfg.Name)
 	}
+
 	defer closeRecorder()
 
 	startRecorder := func() {
@@ -487,9 +494,8 @@ func (w *CamWindow) openAndDecode() error {
 			return
 		}
 
-		// --- Audio stream: re-encode to AAC ---
-		// We use the existing decoder context aCtx and aIdx from playStreamForWindow.
-
+		// --- AAC ---
+		// se the existing decoder context aCtx and aIdx from playStreamForWindow.
 		if aCtx != nil && aIdx >= 0 {
 			// AAC encoder
 			ac := astiav.FindEncoder(astiav.CodecIDAac)
@@ -500,21 +506,30 @@ func (w *CamWindow) openAndDecode() error {
 				if ctx == nil {
 					log.Printf("[%s] recording: AllocCodecContext for AAC failed", w.cfg.Name)
 				} else {
-					// Use the same sample rate as the input audio (G.711 usually 8000 Hz)
-					sr := aCtx.SampleRate()
-					if sr <= 0 {
-						sr = 8000
-					}
+					// Target: 44.1 kHz mono FLTP
+					const sr = 44100
 
-					// Match channel layout from decoder (usually mono)
-					ctx.SetChannelLayout(aCtx.ChannelLayout())
+					// Mono channel layout for AAC
+					ctx.SetChannelLayout(astiav.ChannelLayoutMono)
 					ctx.SetSampleRate(sr)
 
-					// Pick first supported sample format (often FLTP)
-					sfs := ac.SampleFormats()
-					if len(sfs) > 0 {
-						ctx.SetSampleFormat(sfs[0])
+					// Prefer FLTP if supported
+					outFmt := astiav.SampleFormatNone
+					if sfs := ac.SampleFormats(); len(sfs) > 0 {
+						for _, f := range sfs {
+							if f == astiav.SampleFormatFltp {
+								outFmt = f
+								break
+							}
+						}
+						if outFmt == astiav.SampleFormatNone {
+							outFmt = sfs[0]
+						}
+					} else {
+						// Fallback, but all sane AAC builds support FLTP
+						outFmt = astiav.SampleFormatFltp
 					}
+					ctx.SetSampleFormat(outFmt)
 
 					// time base 1/sampleRate
 					ctx.SetTimeBase(astiav.NewRational(1, sr))
@@ -523,11 +538,19 @@ func (w *CamWindow) openAndDecode() error {
 					// Some builds require experimental compliance for AAC
 					ctx.SetStrictStdCompliance(astiav.StrictStdComplianceExperimental)
 
+					// Containers such as MP4 usually want global headers
+					if of := oc.OutputFormat(); of != nil {
+						if of.Flags().Has(astiav.IOFormatFlagGlobalheader) {
+							ctx.SetFlags(ctx.Flags().Add(astiav.CodecContextFlagGlobalHeader))
+						}
+					}
+
 					if err := ctx.Open(ac, nil); err != nil {
 						log.Printf("[%s] recording: AAC encoder open failed: %v", w.cfg.Name, err)
 						ctx.Free()
 					} else {
 						w.aEncCtx = ctx
+						w.audioPts = 0 // reset running PTS for a new recording
 
 						// Output audio stream in the MP4
 						os := oc.NewStream(ac)
@@ -560,6 +583,7 @@ func (w *CamWindow) openAndDecode() error {
 			pb.Free()
 			oc.Free()
 			w.recStreamIx = nil
+
 			if w.aSwr != nil {
 				w.aSwr.Free()
 				w.aSwr = nil
@@ -572,7 +596,10 @@ func (w *CamWindow) openAndDecode() error {
 				w.aEncFrame.Free()
 				w.aEncFrame = nil
 			}
-			closeRecorder()
+			//closeRecorder() FIXME
+			w.aEncStream = nil
+			w.audioPts = 0
+
 			return
 		}
 
@@ -691,21 +718,31 @@ func (w *CamWindow) openAndDecode() error {
 					// start of audio recording block
 					// --- Recording: feed this decoded frame into AAC encoder ---
 					if w.recCtx != nil && w.aEncCtx != nil && w.aSwr != nil && w.aEncStream != nil && w.aEncFrame != nil {
-						//in := []*astiav.Frame{aFrame}
-						// Prepare encoder frame with same nb_samples
+						// AAC uses fixed-size frames; typically 1024 samples.
+						frameSize := w.aEncCtx.FrameSize()
+						if frameSize <= 0 {
+							frameSize = 1024
+						}
+
+						// Prepare encoder frame as 44.1 kHz mono FLTP with frameSize samples.
+						w.aEncFrame.Unref()
 						w.aEncFrame.SetSampleFormat(w.aEncCtx.SampleFormat())
 						w.aEncFrame.SetChannelLayout(w.aEncCtx.ChannelLayout())
 						w.aEncFrame.SetSampleRate(w.aEncCtx.SampleRate())
-						w.aEncFrame.SetNbSamples(w.aEncCtx.FrameSize())
+						w.aEncFrame.SetNbSamples(frameSize)
 
 						if err := w.aEncFrame.AllocBuffer(0); err != nil {
 							log.Printf("[%s] recording: audio frame AllocBuffer failed: %v", w.cfg.Name, err)
-							continue
 						} else {
-							// Convert from decoder fmt/layout to encoder fmt/layout
+							// Convert from decoder format (8 kHz S16 mono) to encoder format (44.1 kHz FLTP mono).
+							// Note: SoftwareResampleContext.ConvertFrame(src, dst)
 							if err := w.aSwr.ConvertFrame(aFrame, w.aEncFrame); err != nil {
 								log.Printf("[%s] recording: swr ConvertFrame failed: %v", w.cfg.Name, err)
-							} else {
+							} else if ns := w.aEncFrame.NbSamples(); ns > 0 {
+								// Set PTS in samples, time base = 1 / sampleRate
+								w.aEncFrame.SetPts(w.audioPts)
+								w.audioPts += int64(ns)
+
 								// Send frame to encoder
 								if err := w.aEncCtx.SendFrame(w.aEncFrame); err != nil && !errors.Is(err, astiav.ErrEagain) {
 									log.Printf("[%s] recording: AAC SendFrame error: %v", w.cfg.Name, err)
@@ -733,12 +770,9 @@ func (w *CamWindow) openAndDecode() error {
 									}
 								}
 							}
-							//aFrame.Unref() // only after playback+recording for this frame
 						}
+					} // end of audio recording block
 
-						// Do not Unref aEncFrame here; we reuse it, but it's okay
-					}
-					// end of audio recording block
 					aFrame.Unref()
 
 				}

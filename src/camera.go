@@ -102,6 +102,7 @@ type CamWindow struct {
 	aEncStream *astiav.Stream
 	aSwr       *astiav.SoftwareResampleContext
 	aEncFrame  *astiav.Frame
+	audioPts   int64 // running PTS in samples for AAC encoder
 
 	recMu sync.Mutex
 }
