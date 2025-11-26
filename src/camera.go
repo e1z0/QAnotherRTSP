@@ -23,9 +23,11 @@ package main
 import (
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	astiav "github.com/asticode/go-astiav"
 	"github.com/mappu/miqt/qt"
 )
 
@@ -85,6 +87,23 @@ type CamWindow struct {
 	busyNS      int64   // total busy nanoseconds accumulated
 	lastMBusyNS int64   // snapshot for delta-per-second
 	cpuPct      float64 // percent of one core, last interval
+	// recording
+	recording atomic.Bool
+	recStop   chan struct{}
+	recDone   chan struct{}
+	recPath   string
+
+	// per-camera recorder FFmpeg state (used in video.go)
+	recCtx      *astiav.FormatContext
+	recIO       *astiav.IOContext
+	recStreamIx map[int]int // map[inputStreamIndex]outputStreamIndex
+
+	aEncCtx    *astiav.CodecContext
+	aEncStream *astiav.Stream
+	aSwr       *astiav.SoftwareResampleContext
+	aEncFrame  *astiav.Frame
+
+	recMu sync.Mutex
 }
 
 func (w *CamWindow) SetOnClosed(fn func(int)) { w.onClosed = fn }
@@ -198,6 +217,8 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 		if w.isFullscreen {
 			return
 		}
+		env.activeWin = w
+
 		if !globalConfig.NoWindowsTitles && globalConfig.ActiveOnWin {
 			log.Printf("focus activated")
 			for _, w := range wins {
@@ -210,6 +231,7 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 				w.win.SetFocus()
 			}
 		}
+		log.Printf("active window set to: %s", env.activeWin.cfg.Name)
 	})
 
 	// Double-click on the camera window
@@ -245,6 +267,19 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 		}
 		w.saveTimer.Stop()
 		w.saveTimer.Start2()
+	})
+
+	// Allow SPACE to toggle recording when this window has focus
+	win.OnKeyPressEvent(func(super func(event *qt.QKeyEvent), ev *qt.QKeyEvent) {
+		if ev.Key() == int(qt.Key_Space) {
+			if env.activeWin != nil {
+				env.activeWin.ToggleRecording()
+				//w.ToggleRecording()
+			}
+			ev.Accept()
+			return
+		}
+		super(ev)
 	})
 
 	w.win = win
@@ -381,6 +416,12 @@ func (w *CamWindow) Close() {
 	if w == nil {
 		return
 	}
+
+	// Make sure we stop recording first
+	//if w.IsRecording() {
+	//	w.stopRecording()
+	//}
+
 	log.Printf("[%s] closing camera", w.cfg.Name)
 	w.closing = true
 	w.wantPlaying = false
@@ -597,4 +638,38 @@ func looksFullscreenish(win *qt.QMainWindow) bool {
 		return true
 	}
 	return false
+}
+
+// IsRecording reports whether this camera is currently recording.
+func (w *CamWindow) IsRecording() bool {
+	if w == nil {
+		return false
+	}
+	return w.recording.Load()
+}
+
+// ToggleRecording starts or stops recording for this camera.
+func (w *CamWindow) ToggleRecording() {
+	if w == nil {
+		return
+	}
+
+	now := !w.recording.Load()
+	w.recording.Store(now)
+
+	// Optional: clear last path when starting
+	if now {
+		w.recPath = ""
+	}
+
+	// Just repaint OSD
+	/*
+		if w.view != nil {
+			CallOnQtMain(func() {
+				w.view.Update()
+			})
+		}
+	*/
+
+	log.Printf("[%s] recording %s", w.cfg.Name, map[bool]string{true: "ON", false: "OFF"}[now])
 }

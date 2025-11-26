@@ -37,13 +37,14 @@ var env Environment
 var configMu sync.Mutex
 
 type Environment struct {
-	configDir    string // configuration directory ~/.config/another-rtsp
-	settingsFile string // configuration path ~/.config/another-rtsp/settings.ini
-	homeDir      string // home directory ~/
-	appPath      string // application directory where the binary lies
-	tmpDir       string // OS Temp directory
-	appDebugLog  string // app debug.log
-	os           string // current operating system
+	configDir    string     // configuration directory ~/.config/another-rtsp
+	settingsFile string     // configuration path ~/.config/another-rtsp/settings.ini
+	homeDir      string     // home directory ~/
+	appPath      string     // application directory where the binary lies
+	tmpDir       string     // OS Temp directory
+	appDebugLog  string     // app debug.log
+	os           string     // current operating system
+	activeWin    *CamWindow // active window title
 }
 
 type AppConfig struct {
