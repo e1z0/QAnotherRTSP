@@ -19,7 +19,9 @@ WINDOCKERIMAGE := nulldevil/qanotherrtsp-win64-cross-go1.23-qt5.15-static:latest
 OSXINTELDOCKER := nulldevil/qanotherrtsp-macos-cross-x86_64-sdk13.1-go1.24.3-qt5.15-dynamic:latest
 OSXARMDOCKER := nulldevil/qanotherrtsp-macos-cross-arm64-sdk13.1-go1.24.3-qt5.15-dynamic:latest
 LINUX64DOCKER := nulldevil/qanotherrtsp-linux64-go1.24-qt5.15-dynamic:latest
+LINUXARM64DOCKER := nulldevil/qanotherrtsp-linux-arm64-go1.24-qt5.15-dynamic:latest
 OS := $(shell uname -s)
+RUN_ENV_FILE := .docker_env
 
 ifeq ($(OS),Darwin)
     PLATFORM_VAR := "darwin"
@@ -35,16 +37,33 @@ else
 endif
 
 # ---------- Docker builder macro ----------
+# Usage examples:
+#   $(call BUILD_DOCKER,ffmpeg-linux-go1.25-qt6.8-dynamic.Dockerfile,conan-build:fedora41,linux/amd64)
+#   $(call BUILD_DOCKER,ffmpeg-linux-go1.25-qt6.8-dynamic.Dockerfile,conan-build:fedora41-arm64,linux/arm64,--load)
+#
 # Args:
-#   1 = Filename
-#   2 = Image name
+#   1 = Dockerfile name (relative to docker/)
+#   2 = Image tag
+#   3 = Platform (optional) e.g. linux/amd64 linux/arm64 linux/arm/v7 ...
+#   4 = Extra buildx args (optional) e.g. --load, --push, --build-arg FOO=bar ...
 define BUILD_DOCKER
-	@if ! docker image inspect "$(2)" > /dev/null 2>&1; then \
-	echo "Image not found, building..."; \
-	docker build -f docker/$(1) -t "$(2)" docker/; \
-	else \
-	echo "Docker image already built, using it..."; \
-	fi
+        @PLATFORM="$(3)"; \
+        EXTRA="$(4)"; \
+        if [ -z "$$PLATFORM" ]; then \
+                PLATFORM_ARG=""; \
+        else \
+                PLATFORM_ARG="--platform $$PLATFORM"; \
+        fi; \
+        if ! docker image inspect "$(2)" > /dev/null 2>&1; then \
+                echo "Image not found, building..."; \
+                if command -v docker-buildx >/dev/null 2>&1 || docker buildx version >/dev/null 2>&1; then \
+                        docker buildx build $$PLATFORM_ARG -f docker/$(1) -t "$(2)" $$EXTRA docker/; \
+                else \
+                        docker build $$PLATFORM_ARG -f docker/$(1) -t "$(2)" docker/; \
+                fi; \
+        else \
+                echo "Docker image already built, using it..."; \
+        fi
 endef
 
 # ---------- Docker run macro ----------
@@ -57,9 +76,23 @@ endef
 #   6 = Fuse enabled 1
 #   7 = interactive 1
 define RUN_DOCKER
-	docker run --rm --init -i --user $(UID):$(GID) \
+        if [ -s $(RUN_ENV_FILE) ]; then ENVFILE="--env-file $(RUN_ENV_FILE)"; else ENVFILE=""; fi; \
+        PLATFORM=""; \
+        if [ "$(1)" = "linux" ]; then \
+                case "$(2)" in \
+                        arm64|aarch64) PLATFORM="--platform linux/arm64" ;; \
+                        arm|armhf)     PLATFORM="--platform linux/arm/v7" ;; \
+                        armv6)         PLATFORM="--platform linux/arm/v6" ;; \
+                        ppc64le)       PLATFORM="--platform linux/ppc64le" ;; \
+                        s390x)         PLATFORM="--platform linux/s390x" ;; \
+                        riscv64)       PLATFORM="--platform linux/riscv64" ;; \
+                        *)             PLATFORM="" ;; \
+                esac; \
+        fi; \
+	docker run $$PLATFORM --rm --init -i --user $(UID):$(GID) \
 		$(if $(7),-t,) \
 		$(if $(6),--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined,) \
+                $$ENVFILE \
 		-v ${HOME}/go/pkg/mod:/go/pkg/mod \
 		-e GOMODCACHE=/go/pkg/mod \
 		-v ${HOME}/.cache/go-build:/.cache/go-build \
@@ -68,10 +101,22 @@ define RUN_DOCKER
 		-v ${PWD}:/src -w /src \
 		-e HOME=/tmp \
 		$(4) \
-		bash -c 'if [[ "$$GOOS" == windows ]]; then sed -e "s/@VERSION_COMMA@/$(VERSION_COMMA)/g" \
-		-e "s/@VERSION_DOT@/$(VERSION_WIN)/g" $(SRC)/resource.rc.in > $(SRC)/resource.rc; \
-		x86_64-w64-mingw32.static-windres $(SRC)/resource.rc -O coff -o $(SRC)/resource.syso; \
-		fi; $(strip $(5))'
+                bash -c ' \
+                        if [[ "$$GOOS" == windows ]]; then \
+                                sed -e "s/@VERSION_COMMA@/$(VERSION_COMMA)/g" \
+                                    -e "s/@VERSION_DOT@/$(VERSION_WIN)/g" \
+                                    $(SRC)/resource.rc.in > $(SRC)/resource.rc; \
+                                if [[ "$$GOARCH" == "386" ]]; then \
+                                        RES=i686-w64-mingw32.static-windres; \
+                                elif [[ "$$GOARCH" == "amd64" ]]; then \
+                                        RES=x86_64-w64-mingw32.static-windres; \
+                                else \
+                                        echo "Unsupported GOARCH=$$GOARCH for Windows resource build" >&2; exit 1; \
+                                fi; \
+                                $$RES $(SRC)/resource.rc -O coff -o $(SRC)/resource.syso; \
+                        fi; \
+                        $(strip $(5)) \
+                '
 endef
 
 # ---------- Go build macro ----------
@@ -91,21 +136,32 @@ define GO_BUILD
 	-o $(3) $(SRC)
 endef
 
+
 # ---------- Linux app Bundle macro ----------
 # Args:
 #   1 = Binary name
+#   2 = Arch (x86_64, aarch64, armhf, i386)
 define APP_BUNDLE
-	if [ ! -f "$(1)" ]; then echo "File $(1) not found, skipping. You should run make docker_build_linux first"; exit 0; fi; \
-	[ -d resources/linux-skeleton/appDir ] && rm -rf resources/linux-skeleton/appDir; \
-	mkdir -p resources/linux-skeleton/appDir/usr/bin/; \
-	cp -f "$(1)" "resources/linux-skeleton/appDir/usr/bin/"; \
-	./utils/linuxdeploy-x86_64.AppImage \
-	--appdir resources/linux-skeleton/appDir \
-	--desktop-file resources/linux-skeleton/$(APP).desktop \
-	--icon-file resources/linux-skeleton/$(APP).png \
-	--executable resources/linux-skeleton/appDir/usr/bin/$(1) \
-	--plugin qt \
-	--output appimage
+        if [ ! -f "$(1)" ]; then echo "File $(1) not found, skipping. You should run make docker_linux_build first"; exit 1; fi; \
+        [ -d $(LINUX_SKEL)/appDir ] && rm -rf $(LINUX_SKEL)/appDir; \
+        mkdir -p $(LINUX_SKEL)/appDir/usr/bin/; \
+        cp -f "$(1)" "$(LINUX_SKEL)/appDir/usr/bin/"; \
+        cp -f $(SRC)/icon.png "$(LINUX_SKEL)/$(APP).png"; \
+        printf "%s\n" \
+                "[Desktop Entry]" \
+                "Name=$(APP)" \
+                "Exec=$(1)" \
+                "Icon=$(APP)" \
+                "Type=Application" \
+                "Categories=Utility;" \
+                > "$(LINUX_SKEL)/$(APP).desktop"; \
+        ./utils/linuxdeploy-${2}.AppImage \
+                --appdir $(LINUX_SKEL)/appDir \
+                --desktop-file $(LINUX_SKEL)/$(APP).desktop \
+                --icon-file $(LINUX_SKEL)/$(APP).png \
+                --executable $(LINUX_SKEL)/appDir/usr/bin/$(1) \
+                --plugin qt \
+                --output appimage
 endef
 
 
@@ -121,8 +177,10 @@ docker_mactel: ## Make a MacOS Intel builder docker container
 docker_macarm: ## Make a MacOS Arm builder docker container
 	$(call BUILD_DOCKER,macos-cross-arm64-sdk13.1-go1.23-qt5.15-dynamic.Dockerfile,$(OSXARMDOCKER))
 
-docker_linux: ## Make a Linux x64 bulder docker container
+docker_linux: ## Make a Linux x64 builder docker container
 	$(call BUILD_DOCKER,linux64-go1.24-qt5.15-dynamic.Dockerfile,$(LINUX64DOCKER))
+docker_linux_arm64: ## Make a Linux arm64 builder docker container
+	$(call BUILD_DOCKER,linux-go1.24-qt5.15-dynamic.Dockerfile,$(LINUXARM64DOCKER),linux/arm64,--load)
 
 docker_mactel_clean:
 	docker image rm $(OSXINTELDOCKER)
@@ -156,14 +214,20 @@ build_linux: ## Local build for Linux
 	$(call GO_BUILD,,,$(REL_LINUX_BIN))
 
 # Make appImage release for Linux
-release_linux: ## Release build for Linux (appBundle)
-	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),$(call APP_BUNDLE,$(REL_LINUX_BIN)),1,)
+release_linux: ## Release build for Linux x86_64 (appBundle)
+	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),$(call APP_BUNDLE,$(REL_LINUX_BIN),x86_64),1,)
 	if [ -f $(APP)-x86_64.AppImage ]; then \
 		rm -rf resources/linux-skeleton/appDir; \
 		mv $(APP)-x86_64.AppImage release/$(APP)-Linux-x86_64.AppImage; \
 		echo "Linux target released to release/$(APP)-Linux-x86_64.AppImage"; \
 	fi
-
+release_linux_arm64: ## Release build for Linux arm64 (appBundle)
+	$(call RUN_DOCKER,linux,arm64,aarch64,$(LINUXARM64DOCKER),$(call APP_BUNDLE,$(REL_LINUX_BIN),aarch64),1,)
+	if [ -f $(APP)-aarch64.AppImage ]; then \
+		rm -rf resources/linux-skeleton/appDir; \
+		mv $(APP)-aarch64.AppImage release/$(APP)-Linux-aarch64.AppImage; \
+		echo "Linux target released to release/$(APP)-Linux-aarch64.AppImage"; \
+	fi
 build_mac: check-qt
 	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
 	CGO_ENABLED=1 \
@@ -187,6 +251,9 @@ docker_build_macarm: ## Build project for MacOS arm
 docker_build_linux: docker_linux
 	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
 	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),$(call GO_BUILD,,,$(REL_LINUX_BIN)),,)
+docker_build_linux_arm64: docker_linux_arm64
+	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
+	$(call RUN_DOCKER,linux,arm64,aarch64,$(LINUXARM64DOCKER),$(call GO_BUILD,,,$(REL_LINUX_BIN)),,)
 
 release_mac: ## Release build for MacOS Apple Silicon/Intel (local mac machine only)
 	[ -d $(MAC_APP_DIR) ] && rm -rf $(MAC_APP_DIR) || true
