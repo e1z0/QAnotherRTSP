@@ -155,7 +155,7 @@ define APP_BUNDLE
                 "Type=Application" \
                 "Categories=Utility;" \
                 > "$(LINUX_SKEL)/$(APP).desktop"; \
-        ./utils/linuxdeploy-${2}.AppImage \
+        ./utils/linuxdeploy-${2}/linuxdeploy-${2}.AppImage \
                 --appdir $(LINUX_SKEL)/appDir \
                 --desktop-file $(LINUX_SKEL)/$(APP).desktop \
                 --icon-file $(LINUX_SKEL)/$(APP).png \
