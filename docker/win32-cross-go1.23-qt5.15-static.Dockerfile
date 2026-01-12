@@ -8,14 +8,14 @@ RUN DEBIAN_FRONTEND=noninteractive \
     echo "deb https://pkg.mxe.cc/repos/apt buster main" >/etc/apt/sources.list.d/mxeapt.list && \
     apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 86B72ED9 && \
     apt-get update && \
-    apt-get install -qyy mxe-x86-64-w64-mingw32.static-qt5 mxe-x86-64-w64-mingw32.static-x265 yasm wget && \
+    apt-get install -qyy mxe-i686-w64-mingw32.static-qt5 mxe-i686-w64-mingw32.static-x265 yasm wget && \
     apt-get clean
 
 ENV PATH=/usr/lib/mxe/usr/bin:$PATH
 
-ENV CXX=x86_64-w64-mingw32.static-g++
-ENV CC=x86_64-w64-mingw32.static-gcc
-ENV PKG_CONFIG=x86_64-w64-mingw32.static-pkg-config
+ENV CXX=i686-w64-mingw32.static-g++
+ENV CC=i686-w64-mingw32.static-gcc
+ENV PKG_CONFIG=i686-w64-mingw32.static-pkg-config
 ENV GOOS=windows
 ENV CGO_ENABLED=1
 ENV GOFLAGS=-buildvcs=false
@@ -26,11 +26,11 @@ RUN cd /tmp && wget -q https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n7.0.3
     tar xzf ffmpeg-7.0.3.tar.gz && \
     cd FFmpeg-n7.0.3 && \
     ./configure \
-    --prefix="/usr/lib/mxe/usr/x86_64-w64-mingw32.static" \
-    --pkgconfigdir="/usr/lib/mxe/usr/x86_64-w64-mingw32.static/lib/pkgconfig" \
-    --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32.static- \
+    --prefix="/usr/lib/mxe/usr/i686-w64-mingw32.static" \
+    --pkgconfigdir="/usr/lib/mxe/usr/i686-w64-mingw32.static/lib/pkgconfig" \
+    --arch=x86_64 --target-os=mingw32 --cross-prefix=i686-w64-mingw32.static- \
     --pkg-config-flags=--static \
-    --extra-cflags="-I/usr/lib/mxe/usr/x86_64-w64-mingw32.static/include" \
+    --extra-cflags="-I/usr/lib/mxe/usr/i686-w64-mingw32.static/include" \
     --extra-ldflags=-static \
     --enable-static --disable-shared --disable-debug --enable-pic \
     --disable-librsvg --disable-xlib --disable-libxcb --disable-sdl2 \

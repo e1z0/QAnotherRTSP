@@ -1,12 +1,10 @@
-APP := AnotherRTSP
-SRC := ./src
+-include .APP
 BUILD_FILE := BUILD
 BUILD := $(shell cat $(BUILD_FILE))
 VERSION := $(shell cat VERSION)
 VERSION_WIN := $(VERSION).0.$(BUILD)
 VERSION_COMMA := $(shell echo $(VERSION_WIN) | tr . ,)
 LINES := $(shell wc -l $(SRC)/*.go | grep total | awk '{print $$1}')
-BINARY := another-rtsp
 REL_LINUX_BIN := $(BINARY)-linux
 REL_MACOS_BIN := $(BINARY)-mac
 REL_WINDOWS_BIN := $(BINARY)-win.exe
@@ -15,26 +13,44 @@ MAC_APP_DIR := $(REL_DIR)/$(APP).app
 ARCH := $(shell uname -m)
 UID ?= $(shell id -u)
 GID ?= $(shell id -g)
-WINDOCKERIMAGE := nulldevil/qanotherrtsp-win64-cross-go1.23-qt5.15-static:latest
-OSXINTELDOCKER := nulldevil/qanotherrtsp-macos-cross-x86_64-sdk13.1-go1.24.3-qt5.15-dynamic:latest
-OSXARMDOCKER := nulldevil/qanotherrtsp-macos-cross-arm64-sdk13.1-go1.24.3-qt5.15-dynamic:latest
-LINUX64DOCKER := nulldevil/qanotherrtsp-linux64-go1.24-qt5.15-dynamic:latest
-LINUXARM64DOCKER := nulldevil/qanotherrtsp-linux-arm64-go1.24-qt5.15-dynamic:latest
+WINDOCKERIMAGE := nulldevil/ffmpeg-win64-cross-go1.23-qt5.15-static:latest
+WIN32DOCKERIMAGE := nulldevil/ffmpeg-win32-cross-go1.23-qt5.15-static:latest
+OSXINTELDOCKER := nulldevil/ffmpeg-macos-cross-x86_64-sdk13.1-go1.24.3-qt5.15-dynamic:latest
+OSXARMDOCKER := nulldevil/ffmpeg-macos-cross-arm64-sdk13.1-go1.24.3-qt5.15-dynamic:latest
+LINUX64DOCKER := nulldevil/ffmpeg-linux64-go1.24-qt5.15-dynamic:latest
+LINUXARM64DOCKER := nulldevil/ffmpeg-linux-arm64-go1.24-qt5.15-dynamic:latest
 OS := $(shell uname -s)
 RUN_ENV_FILE := .docker_env
+
+.ONESHELL:
+SHELL := /bin/bash
 
 ifeq ($(OS),Darwin)
     PLATFORM_VAR := "darwin"
     QT5_PREFIX := $(shell brew --prefix qt@5)
+    RCC := $(QT_PREFIX)/share/qt/libexec/rcc
     FFMPEG_PREFIX := $(shell brew --prefix ffmpeg@7)
+    DBUS_PREFIX := $(shell brew --prefix dbus)
     MAC_DEPLOY_QT := $(QT5_PREFIX)/bin/macdeployqt
+    all: build_mac
 else ifeq ($(OS),Linux)
     PLATFORM_VAR := "linux"
+    RCC := rcc
+    all: docker_linux_build
 else ifeq ($(OS),FreeBSD)
     PLATFORM_VAR := "freebsd"
 else
     PLATFORM_VAR := "unknown"
 endif
+
+EXPORTS := PLATFORM_VAR QT5_PREFIX DBUS_PREFIX MAC_DEPLOY_QT OS APP REL_DIR BINARY REL_MACOS_BIN REL_LINUX_BIN REL_WINDOWS_BIN MAC_APP_DIR ARCH LINUX_SKEL MACOS_SKEL VERSION BUILD IDPREF BUNDLE_COPYRIGHT
+export $(EXPORTS)
+
+help: ## Shows help contents
+	@echo "Available targets:"
+	@grep -hE '^[[:alnum:]][[:alnum:]._/-]*:([^#]|#[^#])*##' $(MAKEFILE_LIST) | \
+		awk 'BEGIN{FS=":.*##[[:space:]]*"} {printf "  \033[1m%-25s\033[0m %s\n", $$1, $$2}' | \
+		sort
 
 # ---------- Docker builder macro ----------
 # Usage examples:
@@ -142,43 +158,42 @@ endef
 #   1 = Binary name
 #   2 = Arch (x86_64, aarch64, armhf, i386)
 define APP_BUNDLE
-        if [ ! -f "$(1)" ]; then echo "File $(1) not found, skipping. You should run make docker_linux_build first"; exit 1; fi; \
-        [ -d $(LINUX_SKEL)/appDir ] && rm -rf $(LINUX_SKEL)/appDir; \
-        mkdir -p $(LINUX_SKEL)/appDir/usr/bin/; \
-        cp -f "$(1)" "$(LINUX_SKEL)/appDir/usr/bin/"; \
-        cp -f $(SRC)/icon.png "$(LINUX_SKEL)/$(APP).png"; \
-        printf "%s\n" \
-                "[Desktop Entry]" \
-                "Name=$(APP)" \
-                "Exec=$(1)" \
-                "Icon=$(APP)" \
-                "Type=Application" \
-                "Categories=Utility;" \
-                > "$(LINUX_SKEL)/$(APP).desktop"; \
-        ./utils/linuxdeploy-${2}/linuxdeploy-${2}.AppImage \
-                --appdir $(LINUX_SKEL)/appDir \
-                --desktop-file $(LINUX_SKEL)/$(APP).desktop \
-                --icon-file $(LINUX_SKEL)/$(APP).png \
-                --executable $(LINUX_SKEL)/appDir/usr/bin/$(1) \
-                --plugin qt \
-                --output appimage
+	if [ ! -f "$(1)" ]; then echo "File $(1) not found, skipping. You should run make docker_linux_build first"; exit 1; fi; \
+	[ -d $(LINUX_SKEL)/appDir ] && rm -rf $(LINUX_SKEL)/appDir; \
+	mkdir -p $(LINUX_SKEL)/appDir/usr/bin/; \
+	cp -f "$(1)" "$(LINUX_SKEL)/appDir/usr/bin/"; \
+	cp -f $(SRC)/icon.png "$(LINUX_SKEL)/$(APP).png"; \
+	printf "%s\n" \
+		"[Desktop Entry]" \
+		"Name=$(APP)" \
+		"Exec=$(1)" \
+		"Icon=$(APP)" \
+		"Type=Application" \
+		"Categories=Utility;" \
+		> "$(LINUX_SKEL)/$(APP).desktop"; \
+	./utils/linuxdeploy-${2}/linuxdeploy-${2}.AppImage \
+		--appdir $(LINUX_SKEL)/appDir \
+		--desktop-file $(LINUX_SKEL)/$(APP).desktop \
+		--icon-file $(LINUX_SKEL)/$(APP).png \
+		--executable $(LINUX_SKEL)/appDir/usr/bin/$(1) \
+		--plugin qt \
+		--output appimage
 endef
 
+unsupported:
+	@echo "Unsupported local operating system..."
 
-# default build (my mac :D)
-all: build_mac
-
-docker_win: ## Make a Windows builder docker container
-	$(call BUILD_DOCKER,win64-cross-go1.23-qt5.15-static.Dockerfile,$(WINDOCKERIMAGE))
-
+docker_win: ## Make a Windows x86_64 builder docker container
+	$(call BUILD_DOCKER,win64-cross-go1.23-qt5.15-static.Dockerfile,$(WINDOCKERIMAGE),,--load)
+docker_win32: ## Make a Windows x86 builder docker container
+	$(call BUILD_DOCKER,win32-cross-go1.23-qt5.15-static.Dockerfile,$(WIN32DOCKERIMAGE),,--load)
 docker_mactel: ## Make a MacOS Intel builder docker container
-	$(call BUILD_DOCKER,macos-cross-x86_64-sdk13.1-go1.23-qt5.15-dynamic.Dockerfile,$(OSXINTELDOCKER))
-
+	$(call BUILD_DOCKER,macos-cross-x86_64-sdk13.1-go1.23-qt5.15-dynamic.Dockerfile,$(OSXINTELDOCKER),,--load)
 docker_macarm: ## Make a MacOS Arm builder docker container
-	$(call BUILD_DOCKER,macos-cross-arm64-sdk13.1-go1.23-qt5.15-dynamic.Dockerfile,$(OSXARMDOCKER))
+	$(call BUILD_DOCKER,macos-cross-arm64-sdk13.1-go1.23-qt5.15-dynamic.Dockerfile,$(OSXARMDOCKER),,--load)
 
 docker_linux: ## Make a Linux x64 builder docker container
-	$(call BUILD_DOCKER,linux64-go1.24-qt5.15-dynamic.Dockerfile,$(LINUX64DOCKER))
+	$(call BUILD_DOCKER,linux-go1.24-qt5.15-dynamic.Dockerfile,$(LINUX64DOCKER),linux/amd64,--load)
 docker_linux_arm64: ## Make a Linux arm64 builder docker container
 	$(call BUILD_DOCKER,linux-go1.24-qt5.15-dynamic.Dockerfile,$(LINUXARM64DOCKER),linux/arm64,--load)
 
@@ -191,43 +206,63 @@ docker_win_clean:
 docker_linux_clean:
 	docker image rm $(LINUX64DOCKER)
 
-docker_build_win:
-	$(call RUN_DOCKER,windows,amd64,amd64,$(WINDOCKERIMAGE),$(call GO_BUILD,,1,$(REL_WINDOWS_BIN)),,)
-	@if [ -e $(SRC)/resource.syso ]; then \
-		rm $(SRC)/resource.syso; \
-	fi
+build_win: res ## Build windows x86_64 static binary (using Docker container)
+	@if test -f $(REL_WINDOWS_BIN); then rm $(REL_WINDOWS_BIN); fi
+	$(call RUN_DOCKER,windows,amd64,amd64,$(WINDOCKERIMAGE),$(call GO_BUILD,0,1,$(REL_WINDOWS_BIN)),,)
+	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
+build_win32: res ## Build windows x86 static binary (using Docker container)
+	@if test -f $(REL_WINDOWS_BIN); then rm $(REL_WINDOWS_BIN); fi
+	$(call RUN_DOCKER,windows,386,386,$(WIN32DOCKERIMAGE),$(call GO_BUILD,0,1,$(REL_WINDOWS_BIN)),,)
+	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
+
 
 # Make zip file for windows release
-release_win: ## Release build for Windows x64 using docker
-	@if [ -f $(REL_DIR)/$(APP)-Win-x64.zip ]; then \
-	rm $(REL_DIR)/$(APP)-Win-x64.zip; \
-        fi
-	@if [ -f $(REL_WINDOWS_BIN) ]; then \
-	mv $(REL_WINDOWS_BIN) ${REL_DIR}/$(APP).exe; \
-	cd $(REL_DIR) && zip $(APP)-Win-x64.zip $(APP).exe && rm $(APP).exe && cd ..; \
-	else \
-	echo "Binary $(REL_WINDOWS_BIN) cannot be found, first run docker_build_win"; \
-	fi
+release_win: res build_win reldir ## Release build for windows (makes .zip release)
+	@if ! test -f "$(REL_WINDOWS_BIN)"; then echo "Windows binaries not found (required for release target)."; exit 1; fi
+	@if test -f "$(REL_DIR)/$(APP)-Win-x86_64.zip"; then rm -f "$(REL_DIR)/$(APP)-Win-x86_64.zip"; fi
+	@if test -d "$(REL_DIR)/$(APP)"; then rm -rf "$(REL_DIR)/$(APP)"; fi
+	mkdir -p "$(REL_DIR)/$(APP)"
+	mv -f "$(REL_WINDOWS_BIN)" "$(REL_DIR)/$(APP)/$(REL_WINDOWS_BIN)"
+	@# add readme if necessary
+	@#cp -f README.md "$(REL_DIR)/$(APP)/"; \
+	cd "$(REL_DIR)" && zip -r "$(APP)-Win-x86_64.zip" "$(APP)" && rm -rf "$(APP)"
+release_win32: res build_win32 reldir ## Release build for windows 32 bit (makes .zip release)
+	@if ! test -f "$(REL_WINDOWS_BIN)"; then echo "Windows binaries not found (required for release target)."; exit 1; fi
+	@if test -f "$(REL_DIR)/$(APP)-Win-x86.zip"; then rm -f "$(REL_DIR)/$(APP)-Win-x86.zip"; fi
+	@if test -d "$(REL_DIR)/$(APP)"; then rm -rf "$(REL_DIR)/$(APP)"; fi
+	mkdir -p "$(REL_DIR)/$(APP)"
+	mv -f "$(REL_WINDOWS_BIN)" "$(REL_DIR)/$(APP)/$(REL_WINDOWS_BIN)"
+	@# add readme if necessary
+	@#cp -f README.md "$(REL_DIR)/$(APP)/"; \
+	cd "$(REL_DIR)" && zip -r "$(APP)-Win-x86.zip" "$(APP)" && rm -rf "$(APP)"
 
 # Linux x64 (local build on linux host) should be latest debian trixie or compatible release
 build_linux: ## Local build for Linux
 	$(call GO_BUILD,,,$(REL_LINUX_BIN))
 
-# Make appImage release for Linux
-release_linux: ## Release build for Linux x86_64 (appBundle)
-	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),$(call APP_BUNDLE,$(REL_LINUX_BIN),x86_64),1,)
+release_linux: reldir docker_linux_build ## Release build for Linux (creates .appImage bundle using Docker container)
+	@if ! test -f "$(REL_LINUX_BIN)"; then echo "Linux binaries not found (required for release target)."; exit 1; fi
+	@if test -d $(LINUX_SKEL)/appDir; then rm -rf $(LINUX_SKEL)/appDir; fi
+	@if test -f "$(REL_DIR)/$(APP)-x86_64.AppImage"; then rm -f "$(REL_DIR)/$(APP)-x86_64.AppImage"; fi
+	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUXDOCKERIMAGE),$(call APP_BUNDLE,$(REL_LINUX_BIN),x86_64),1,)
 	if [ -f $(APP)-x86_64.AppImage ]; then \
-		rm -rf resources/linux-skeleton/appDir; \
-		mv $(APP)-x86_64.AppImage release/$(APP)-Linux-x86_64.AppImage; \
-		echo "Linux target released to release/$(APP)-Linux-x86_64.AppImage"; \
+		rm -rf $(LINUX_SKEL)/appDir; \
+		mv $(APP)-x86_64.AppImage $(REL_DIR)/$(APP)-Linux-x86_64.AppImage; \
+		echo "Linux target released to $(REL_DIR)/$(APP)-Linux-x86_64.AppImage"; \
 	fi
-release_linux_arm64: ## Release build for Linux arm64 (appBundle)
-	$(call RUN_DOCKER,linux,arm64,aarch64,$(LINUXARM64DOCKER),$(call APP_BUNDLE,$(REL_LINUX_BIN),aarch64),1,)
+	@if test -f $(REL_LINUX_BIN); then rm $(REL_LINUX_BIN); fi
+release_linux_arm64: reldir docker_linux_build_arm64 ## Release build for Linux arm64 (creates .appImage bundle using Docker container)
+	@if ! test -f "$(REL_LINUX_BIN)"; then echo "Linux binaries not found (required for release target)."; exit 1; fi
+	@if test -d $(LINUX_SKEL)/appDir; then rm -rf $(LINUX_SKEL)/appDir; fi
+	@if test -f "$(REL_DIR)/$(APP)-aarch64.AppImage"; then rm -f "$(REL_DIR)/$(APP)-aarch64.AppImage"; fi
+	$(call RUN_DOCKER,linux,arm64,aarch64,$(LINUX_AARCH_DOCKER),$(call APP_BUNDLE,$(REL_LINUX_BIN),aarch64),1,)
 	if [ -f $(APP)-aarch64.AppImage ]; then \
-		rm -rf resources/linux-skeleton/appDir; \
-		mv $(APP)-aarch64.AppImage release/$(APP)-Linux-aarch64.AppImage; \
-		echo "Linux target released to release/$(APP)-Linux-aarch64.AppImage"; \
+		rm -rf $(LINUX_SKEL)/appDir; \
+		mv $(APP)-aarch64.AppImage $(REL_DIR)/$(APP)-Linux-aarch64.AppImage; \
+		echo "Linux target released to $(REL_DIR)/$(APP)-Linux-aarch64.AppImage"; \
 	fi
+	@if test -f $(REL_LINUX_BIN); then rm $(REL_LINUX_BIN); fi
+
 build_mac: check-qt
 	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
 	CGO_ENABLED=1 \
@@ -242,43 +277,52 @@ build_mac: check-qt
 	-X main.debugging=true \
 	-v -s -w" -o $(REL_MACOS_BIN) $(SRC)
 
-docker_build_mactel: ## Build project for MacOS Intel
-	$(call RUN_DOCKER,darwin,amd64,amd64,$(OSXINTELDOCKER),./scripts/dockerbuild,,)
+docker_mactel_build: res ## Build target for MacOS Intel (using Docker container)
+	@if test -f $(REL_MACOS_BIN); then rm $(REL_MACOS_BIN); fi
+	$(call RUN_DOCKER,darwin,amd64,amd64,$(MACOSINTELIMAGE),$(call GO_BUILD,,,$(REL_MACOS_BIN),,),,)
 
-docker_build_macarm: ## Build project for MacOS arm
-	$(call RUN_DOCKER,darwin,arm64,arm64,$(OSXARMDOCKER),./scripts/dockerbuild,,)
+docker_macarm_build: res ## Build target for MacOS Arm64 (using Docker container)
+	@if test -f $(REL_MACOS_BIN); then rm $(REL_MACOS_BIN); fi
+	$(call RUN_DOCKER,darwin,arm64,arm64,$(MACOSARMIMAGE),$(call GO_BUILD,,,$(REL_MACOS_BIN),,),,)
 
-docker_build_linux: docker_linux
+
+
+docker_linux_build: docker_linux
 	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
+	@if test -f $(REL_LINUX_BIN); then rm $(REL_LINUX_BIN); fi
 	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),$(call GO_BUILD,,,$(REL_LINUX_BIN)),,)
-docker_build_linux_arm64: docker_linux_arm64
+docker_linux_build_arm64: docker_linux_arm64
 	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
+	@if test -f $(REL_LINUX_BIN); then rm $(REL_LINUX_BIN); fi
 	$(call RUN_DOCKER,linux,arm64,aarch64,$(LINUXARM64DOCKER),$(call GO_BUILD,,,$(REL_LINUX_BIN)),,)
 
-release_mac: ## Release build for MacOS Apple Silicon/Intel (local mac machine only)
-	[ -d $(MAC_APP_DIR) ] && rm -rf $(MAC_APP_DIR) || true
-	[ -f $(REL_DIR)/$(APP)-$(ARCH)-Mac.zip ] && rm $(REL_DIR)/$(APP)-$(ARCH)-Mac.zip || true
-	[ -f $(REL_DIR)/$(APP)-$(ARCH).dmg ] && rm $(REL_DIR)/$(APP)-$(ARCH).dmg || true
-	cp -r resources/macos-skeleton $(MAC_APP_DIR)
-	mkdir $(MAC_APP_DIR)/Contents/{MacOS,Frameworks,libs}
-	cp $(REL_MACOS_BIN) $(MAC_APP_DIR)/Contents/MacOS/$(BINARY)
-	# copy all necessary ffmpeg folders
-	chmod +x $(MAC_APP_DIR)/Contents/MacOS/$(BINARY)
-	dylibbundler -od -b -x ./$(MAC_APP_DIR)/Contents/MacOS/$(BINARY) -d ./$(MAC_APP_DIR)/Contents/libs/
-	$(MAC_DEPLOY_QT) $(MAC_APP_DIR) -verbose=1 -always-overwrite -executable=$(MAC_APP_DIR)/Contents/MacOS/$(BINARY)
-	@# hide app from dock 
-	@#/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$(MAC_APP_DIR)/Contents/Info.plist"
-	@# add copyright
-	@/usr/libexec/PlistBuddy -c "Add :NSHumanReadableCopyright string © 2025 e1z0. All rights reserved." "$(MAC_APP_DIR)/Contents/Info.plist"
-	@# add version information
-	/usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $(VERSION)" "$(MAC_APP_DIR)/Contents/Info.plist"
-	@# add build information
-	/usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $(BUILD)" "$(MAC_APP_DIR)/Contents/Info.plist"
-	codesign --force --deep --sign - $(MAC_APP_DIR)
-	touch $(MAC_APP_DIR)
-	hdiutil create $(REL_DIR)/$(APP)-$(ARCH).dmg -volname "AnotherRTSP" -fs HFS+ -srcfolder $(MAC_APP_DIR)
-	#@bash -c 'pushd $(REL_DIR) > /dev/null; zip -r $(APP)-$(ARCH)-Mac.zip $(APP).app; popd > /dev/null'
-	#@echo "Output: $(MAC_APP_DIR) and $(APP)-$(ARCH)-Mac.zip" 
+release_mac: reldir ## Release build (App Bundle) for MacOS Apple/Intel. Can run on MacoS or Linux (uses docker container) architecture - autodetected
+ifeq ($(OS),Linux)
+	@echo "Linux host detected -> running macOS bundle build inside Docker"
+	@rm -f $(RUN_ENV_FILE)
+	@ARCH_LINE="$$(file -b "$(REL_MACOS_BIN)" 2>/dev/null || true)"; \
+	if [ -z "$$ARCH_LINE" ]; then echo "Error: $(REL_MACOS_BIN) not found" >&2; exit 1; fi; \
+	if echo "$$ARCH_LINE" | grep -qE 'arm64|aarch64'; then \
+		IMG="$(MACOSARMIMAGE)"; VAR1=arm64; VAR2=amd64; \
+	elif echo "$$ARCH_LINE" | grep -qE 'x86_64|amd64'; then \
+		IMG="$(MACOSINTELIMAGE)"; VAR1=amd64; VAR2=amd64; \
+	else \
+		echo "Error: Unsupported mac binary arch: $$ARCH_LINE" >&2; exit 1; \
+	fi;
+	@$(foreach v,$(EXPORTS),printf '%s=%s\n' '$(v)' '$(value $(v))' >> $(RUN_ENV_FILE);)
+	$(call RUN_DOCKER,darwin,$$VAR1,$$VAR2,$$IMG,./scripts/build-appbundle,,)
+	@if test -f $(RUN_ENV_FILE); then rm -f $(RUN_ENV_FILE); fi
+	@if test -f $(REL_MACOS_BIN); then rm -f $(REL_MACOS_BIN); fi
+	@if test -f macdeployqtfix.log; then rm -f macdeployqtfix.log; fi
+else ifeq ($(OS),Darwin)
+	@echo "macOS host detected -> running locally"
+	./scripts/build-appbundle
+else
+	@echo "Error: Unsupported OS: $(OS)" >&2
+	@exit 1
+endif
+
+
 .PHONY: build check-qt
 
 # Enter MacOS x86_64 docker
@@ -305,6 +349,9 @@ check-qt:
 	  exit 1; \
 	fi
 
+reldir:
+	@if [ ! -d $(REL_DIR) ]; then mkdir $(REL_DIR); fi
+
 debug:
 	GOTRACEBACK=all GODEBUG='schedtrace=1000,gctrace=1' ./$(REL_MACOS_BIN)
 
@@ -316,5 +363,5 @@ deps:
 	go install github.com/mappu/miqt/cmd/miqt-rcc@latest
 
 res:
-	~/go/bin/miqt-rcc -RccBinary $(QT5_BASE)/bin/rcc -Input src/resources.qrc -OutputGo src/resources.qrc.go
+	~/go/bin/miqt-rcc -RccBinary $(RCC) -Input $(SRC)/resources.qrc -OutputGo $(SRC)/resources.qrc.go
 

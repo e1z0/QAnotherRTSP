@@ -1,7 +1,33 @@
 #!/bin/bash
-APP=AnotherRTSP
 
-. $HOME/.deployer_qanotherrtsp
+if ! command -v make >/dev/null 2>&1; then
+  echo "ERROR: 'make' is required but was not found in PATH." >&2
+  exit 1
+fi
+
+eval "$(
+  make -f - --no-print-directory print-app-vars <<'MAKE'
+include .APP
+print-app-vars:
+	@printf 'APP=%q\n' '$(APP)'
+	@printf 'IDPREF=%q\n' '$(IDPREF)'
+	@printf 'BUNDLE_COPYRIGHT=%q\n' '$(BUNDLE_COPYRIGHT)'
+	@printf 'SRC=%q\n' '$(SRC)'
+	@printf 'BINARY=%q\n' '$(BINARY)'
+MAKE
+)"
+
+echo "Deploying target: $APP"
+
+DEP_SETTINGS=$HOME/.deployer_${APP}
+
+if ! [ -f "$DEP_SETTINGS" ]; then
+  echo "No deployment settings: $DEP_SETTINGS found, exiting..."
+  exit 1
+fi
+
+. $DEP_SETTINGS
+echo "Deployment settings loaded.."
 cd "$(dirname "$(realpath "$0")")"/../
 
 alert() {
@@ -30,22 +56,21 @@ intercept_command() {
 CMM="$1"
 $CMM
 if [ $? -ne 0 ]; then
-alert "QAnotherRTSP deployer: command failed -> $CMM"
+alert "$APP Deployer: command failed -> $CMM"
 fi
 }
 
 build_and_release() {
 increase_build_number
 echo "Building..."
-#intercept_command "make build_linux"
-intercept_command "make docker_build_linux"
 intercept_command "make release_linux"
-intercept_command "make docker_build_linux_arm64"
 intercept_command "make release_linux_arm64"
-#intercept_command "make docker_build_mactel"
-#intercept_command "make release_mactel"
-intercept_command "make docker_build_win"
+intercept_command "make docker_mactel_build"
+intercept_command "make release_mac"
+intercept_command "make docker_macarm_build"
+intercept_command "make release_mac"
 intercept_command "make release_win"
+intercept_command "make release_win32"
 echo "Build finished"
 }
 
@@ -54,22 +79,66 @@ BUILD=$(<BUILD)
 VERSION=$(<VERSION)
 echo "Deploying version $VERSION build: $BUILD"
 NEWDIR="v$VERSION-BUILD-$BUILD"
-ssh $TARGET -p 220 "cd $DEPDIR && mkdir $NEWDIR && unlink current && ln -sf $NEWDIR current"
-if [ -f release/AnotherRTSP-Mac-intel.zip ]; then
-$SCP release/AnotherRTSP-Mac-intel.zip $TARGET:$DEPDIR/$NEWDIR/
+
+ssh "$TARGET" -p $SSHPORT "
+  set -e
+
+  if [ ! -d \"$DEPDIR\" ]; then
+    mkdir -p \"$DEPDIR\"
+  fi
+
+  cd \"$DEPDIR\"
+
+  mkdir -p \"$NEWDIR\"
+
+  if [ -L current ] || [ -e current ]; then
+    rm -f current
+  fi
+
+  ln -sfn \"$NEWDIR\" current
+"
+
+# MacOS Intel
+if [ -f release/${APP}-Mac-Intel.zip ]; then
+$SCP release/${APP}-Mac-Intel.zip $TARGET:$DEPDIR/$NEWDIR/
+rm -f release/${APP}-Mac-Intel.zip
 fi
 
-if [ -f release/AnotherRTSP-Win-x64.zip ]; then
-$SCP release/AnotherRTSP-Win-x64.zip $TARGET:$DEPDIR/$NEWDIR/
+# MacOS ARM64
+if [ -f release/${APP}-Mac-arm64.zip ]; then
+$SCP release/${APP}-Mac-arm64.zip $TARGET:$DEPDIR/$NEWDIR/
+rm -f release/${APP}-Mac-arm64.zip
 fi
 
-if [ -f release/AnotherRTSP-Linux-x86_64.AppImage ]; then
-$SCP release/AnotherRTSP-Linux-x86_64.AppImage $TARGET:$DEPDIR/$NEWDIR/
+# legacy for compatibility reasons
+if [ -f release/${APP}-Win-x64.zip ]; then
+$SCP release/${APP}-Win-x64.zip $TARGET:$DEPDIR/$NEWDIR/
+rm -f release/${APP}-Win-x64.zip
 fi
 
-if [ -f release/${APP}-aarch64.AppImage ]; then
-$SCP release/${APP}-aarch64.AppImage $TARGET:$DEPDIR/$NEWDIR/
+# Windows x86_64
+if [ -f release/${APP}-Win-x86_64.zip ]; then
+$SCP release/${APP}-Win-x86_64.zip $TARGET:$DEPDIR/$NEWDIR/
+rm -f release/${APP}-Win-x86_64.zip
 fi
+
+# Windows x86
+if [ -f release/${APP}-Win-x86.zip ]; then
+$SCP release/${APP}-Win-x86.zip $TARGET:$DEPDIR/$NEWDIR/
+rm -f release/${APP}-Win-x86.zip
+fi
+
+# Linux x86_64
+if [ -f release/${APP}-Linux-x86_64.AppImage ]; then
+$SCP release/${APP}-Linux-x86_64.AppImage $TARGET:$DEPDIR/$NEWDIR/
+rm -f release/${APP}-Linux-x86_64.AppImage
+fi
+# Linux arm64
+if [ -f release/${APP}-Linux-aarch64.AppImage ]; then
+$SCP release/${APP}-Linux-aarch64.AppImage $TARGET:$DEPDIR/$NEWDIR/
+rm -f release/${APP}-Linux-aarch64.AppImage
+fi
+
 
 git commit -am "Build $BUILD"
 git push

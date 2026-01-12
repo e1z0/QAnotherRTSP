@@ -1,0 +1,342 @@
+#!/bin/bash
+# Building macOS AppBundle
+# (c) 2025-2026 e1z0 licensed under MIT license
+
+# Remove double quotes from string
+PLATFORM_VAR="${PLATFORM_VAR//\"/}"
+# osxcross toolchain prefix
+TOOL_PREFIX="$TOOLCHAINPREFIX"
+OTOOL="${TOOL_PREFIX}-otool"
+INSTALL_NAME_TOOL="${TOOL_PREFIX}-install_name_tool"
+
+# Declare once for recursion tracking
+declare -A visited
+
+copy_and_patch_deps() {
+    local file="$1"
+    local app_bin_relpath="@executable_path/../Frameworks"
+    local QT_ROOT="/osxcross/macports/pkgs"
+
+    [[ -z "$file" || ! -e "$file" ]] && return
+    [[ -n "${visited["$file"]}" ]] && return
+    visited["$file"]=1
+
+    echo "[*] Scanning: $file"
+
+    # Extract dependencies
+    local deps
+    deps=$($OTOOL -L "$file" | tail -n +2 | awk '{print $1}' | grep -E '\.dylib|\.framework')
+
+    for dep in $deps; do
+        [[ "$dep" == @* || "$dep" == /System/* || "$dep" == /usr/lib/* ]] && continue
+
+        if [[ "$dep" == *".framework/"* ]]; then
+            local fwname=$(basename "$dep" | cut -d. -f1)
+            local dep_fixed="${dep/\/opt\/local/$QT_ROOT/opt/local}"
+            local fwroot=$(echo "$dep_fixed" | sed -E "s|(.*${fwname}\.framework).*|\1|")
+            local fwdest="$MAC_APP_DIR/$FRAMEWORKS/${fwname}.framework"
+
+            if [[ ! -d "$fwdest" ]]; then
+                echo "  ? Copying framework: $fwname"
+                cp -R "$fwroot" "$fwdest"
+                chmod -R +w "$fwdest"
+            fi
+
+            local fwlib=""
+            if [[ -f "$fwdest/Versions/A/$fwname" ]]; then
+                fwlib="$fwdest/Versions/A/$fwname"
+            elif [[ -f "$fwdest/$fwname" ]]; then
+                fwlib="$fwdest/$fwname"
+            else
+                fwlib=$(find "$fwdest" -type f -name "$fwname" | head -n1)
+            fi
+
+            if [[ -f "$fwlib" ]]; then
+                echo "  ? Patching $file (framework: $fwname)"
+                $INSTALL_NAME_TOOL -change "$dep" "$app_bin_relpath/${fwname}.framework/$fwname" "$file"
+                copy_and_patch_deps "$fwlib"
+            else
+                echo "  ⚠️  Framework lib not found: $fwdest"
+            fi
+        else
+            local dep_fixed="${dep/\/opt\/local/$QT_ROOT/opt/local}"
+            local dep_name=$(basename "$dep")
+            local dep_dest="$MAC_APP_DIR/$FRAMEWORKS/$dep_name"
+
+            if [[ ! -f "$dep_dest" ]]; then
+                echo "  ? Copying dylib: $dep_name"
+                cp "$dep_fixed" "$dep_dest" 2>/dev/null || {
+                    echo "  ⚠️  Skipping missing: $dep_fixed"
+                    continue
+                }
+                chmod +w "$dep_dest"
+            fi
+
+            echo "  ? Patching $file (dylib: $dep_name)"
+            $INSTALL_NAME_TOOL -change "$dep" "$app_bin_relpath/$dep_name" "$file"
+            copy_and_patch_deps "$dep_dest"
+        fi
+    done
+}
+
+# Helper: rewrite deps inside a single Mach-O file
+rewrite_deps() {
+  local target="$1"
+  # List deps, filter only absolute /opt/local/lib paths
+  otool -L "$target" | awk '/\/opt\/local\/lib\/.*\.dylib/ {print $1}' | while read -r dep; do
+    local base="$(basename "$dep")"
+    local new="@rpath/$base"
+    echo "Fix: $target  $dep  ->  $new"
+    install_name_tool -change "$dep" "$new" "$target"
+  done
+  # (Optional) If we want to prefer the system zlib/iconv instead of bundling, we could:
+  # install_name_tool -change /opt/local/lib/libz.1.dylib /usr/lib/libz.1.dylib "$target" || true
+  # install_name_tool -change /opt/local/lib/libiconv.2.dylib /usr/lib/libiconv.2.dylib "$target" || true
+}
+
+sanity_check() {
+local APP="$1"
+find "$APP" -type f -print0 |
+while IFS= read -r -d '' f; do
+  if otool -L "$f" >/dev/null 2>&1; then
+    HITS=$(otool -L "$f" 2>/dev/null | awk '/^[[:space:]]+\/opt\/local\/lib\/.*\.dylib/ {print $1}')
+    if [ -n "$HITS" ]; then
+      echo "$f:"
+      echo "$HITS" | sed 's/^/  ↳ /'
+      echo
+    fi
+  fi
+done
+}
+
+
+echo "----- ENV INFO ------------"
+echo "QT Prefix: $QT5_PREFIX"
+echo "OS: ${PLATFORM_VAR}"
+echo "MacDeployQT: $MAC_DEPLOY_QT"
+echo "Go cache: $GO_CACHE"
+echo "uname: $OS"
+echo "App: $APP"
+echo "Release dir: $REL_DIR"
+echo "Binary: $BINARY"
+echo "Rel-Macos: $REL_MACOS_BIN"
+echo "Rel-Linux: $REL_LINUX_BIN"
+echo "Rel-Windows: $REL_WINDOWS_BIN"
+echo "MacAppBundle: $MAC_APP_DIR"
+echo "Linux skeleton: $LINUX_SKEL"
+echo "MacOS skeleton: $MACOS_SKEL"
+echo "Arch: $ARCH"
+echo "---------------------------"
+
+ZIPOS="$GOARCH"
+if [[ "$GOARCH" == "amd64" ]]; then
+ZIPOS="Intel"
+fi
+ZIP_NAME=$APP-Mac-$ZIPOS.zip
+
+if [[ "$OS" == "Darwin" ]]; then
+  echo "MacOS Darwin arm64 local build machine detected"
+  if ! command -v dylibbundler >/dev/null 2>&1; then
+    echo "Error: dylibbundler not found in PATH" >&2
+    echo "Install: brew install dylibbundler"
+    exit 1
+  fi
+  if ! command -v "${MAC_DEPLOY_QT}" >/dev/null 2>&1; then
+    echo "Error: the macdeployqt was not found, did you installed qt5 on your mac?"
+    echo "Install: brew install qt@6"
+    exit 1
+  fi
+  if ! command -v /usr/libexec/PlistBuddy >/dev/null 2>&1; then
+    echo "Unable to locate PlistBuddy binary..."
+    echo "The app bundle was interrupted!"
+    exit 1
+  fi
+  [ -d ${MAC_APP_DIR} ] && rm -rf ${MAC_APP_DIR} || true
+  [ -f ${REL_DIR}/${APP}-${ARCH}-Mac.zip ] && rm ${REL_DIR}/${APP}-${ARCH}-Mac.zip || true
+  [ -f ${REL_DIR}/${APP}-Mac-${ARCH}.dmg ] && rm ${REL_DIR}/${APP}-Mac-${ARCH}.dmg || true
+  cp -r ${MACOS_SKEL} ${MAC_APP_DIR}
+  mkdir ${MAC_APP_DIR}/Contents/{MacOS,Frameworks,libs}
+  cp ${REL_MACOS_BIN} ${MAC_APP_DIR}/Contents/MacOS/${BINARY}
+  /usr/libexec/PlistBuddy -c "Add :CFBundleName string ${APP}" "${MAC_APP_DIR}/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string ${BINARY}" "${MAC_APP_DIR}/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string ${IDPREF}.${BINARY}" "${MAC_APP_DIR}/Contents/Info.plist"
+  chmod +x ${MAC_APP_DIR}/Contents/MacOS/${BINARY}
+  # Copy the required QtDBus Framework
+  ditto "${QT5_PREFIX}/lib/QtDBus.framework" "${MAC_APP_DIR}/Contents/Frameworks/QtDBus.framework"
+  # Fix QtDBus.framework install name (id) to @rpath (standard for frameworks)
+  install_name_tool -id "@rpath/QtDBus.framework/Versions/A/QtDBus" \
+    "${MAC_APP_DIR}/Contents/Frameworks/QtDBus.framework/Versions/A/QtDBus"
+  # Fix QtDBus.framework dependencies to app-local paths
+  install_name_tool \
+    -change "/opt/homebrew/opt/qtbase/lib/QtDBus.framework/Versions/A/QtDBus" \
+    "@rpath/QtDBus.framework/Versions/A/QtDBus" \
+    -change "@rpath/QtCore.framework/Versions/A/QtCore" \
+    "@loader_path/../../../../Frameworks/QtCore.framework/Versions/A/QtCore" \
+    -change "/opt/homebrew/opt/dbus/lib/libdbus-1.3.dylib" \
+    "@loader_path/../../../../libs/libdbus-1.3.dylib" \
+    "${MAC_APP_DIR}/Contents/Frameworks/QtDBus.framework/Versions/A/QtDBus"
+  dylibbundler -od -b -x ./${MAC_APP_DIR}/Contents/MacOS/${BINARY} -d ./${MAC_APP_DIR}/Contents/libs
+  # Copy libdbus
+  ditto "${DBUS_PREFIX}/lib/libdbus-1.dylib" "${MAC_APP_DIR}/Contents/libs/libdbus-1.3.dylib"
+  # Fix libdbus install name and make it self-contained (usually already is, but set id anyway)
+  install_name_tool -id "@rpath/libdbus-1.3.dylib" "${MAC_APP_DIR}/Contents/libs/libdbus-1.3.dylib"
+  # Re-Sign the lib
+  codesign --force --options runtime --timestamp=none --sign - ${MAC_APP_DIR}/Contents/libs/libdbus-1.3.dylib
+  ${MAC_DEPLOY_QT} ${MAC_APP_DIR} -verbose=1 -always-overwrite \
+    -libpath=${QT5_PREFIX}/lib \
+    -executable=${MAC_APP_DIR}/Contents/MacOS/${BINARY}
+  # add copyright
+  /usr/libexec/PlistBuddy -c "Add :NSHumanReadableCopyright string ${BUNDLE_COPYRIGHT}" "${MAC_APP_DIR}/Contents/Info.plist"
+  # add version information
+  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${VERSION}" "${MAC_APP_DIR}/Contents/Info.plist"
+  # add build information
+  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${BUILD}" "${MAC_APP_DIR}/Contents/Info.plist"
+  codesign --force --deep --sign - ${MAC_APP_DIR}
+  touch ${MAC_APP_DIR}
+  hdiutil create ${REL_DIR}/${APP}-Mac-${ARCH}.dmg -volname "${APP}" -fs HFS+ -srcfolder ${MAC_APP_DIR}
+  echo "$APP App bundle for Mac-$ARCH is ready!"
+elif [[ "$OS" == "Linux" ]]; then
+  echo "Linux local build machine detected"
+  if [ -d "$MAC_APP_DIR" ]; then
+    echo "[*] Cleaning previous bundle $MAC_APP_DIR ..."
+    rm -rf "$MAC_APP_DIR"
+  fi
+  # App Bundle definitions
+  MACOS="Contents/MacOS"
+  PLUGINS="Contents/PlugIns"
+  PLATFORMS="$PLUGINS/platforms"
+  RESOURCES="Contents/Resources"
+  FRAMEWORKS="Contents/Frameworks"
+  LIBS="Contents/libs"
+  echo "[*] Creating $MAC_APP_DIR structure..."
+  cp -r $MACOS_SKEL $MAC_APP_DIR
+  mkdir -p "$MAC_APP_DIR/$MACOS"
+  mkdir -p "$MAC_APP_DIR/$FRAMEWORKS"
+  mkdir -p "$MAC_APP_DIR/$PLATFORMS"
+  echo "[*] Copying application binary $BINARY to appBundle..."
+  cp ${REL_MACOS_BIN} $MAC_APP_DIR/$MACOS/$BINARY
+  echo "[*] Generating Info.plist..."
+  python3 - <<'PY'
+import os, plistlib, pathlib
+plist_path = pathlib.Path(os.environ["MAC_APP_DIR"]) / "Contents" / "Info.plist"
+data = {}
+if plist_path.exists():
+    data = plistlib.loads(plist_path.read_bytes())
+def setv(k, v):
+    if v is None or v == "":
+        return
+    data[k] = v
+setv("CFBundleName", os.environ.get("APP"))
+setv("CFBundleExecutable", os.environ.get("BINARY"))
+setv("CFBundleIdentifier", f'{os.environ.get("IDPREF","")}.{os.environ.get("BINARY","")}'.strip("."))
+setv("NSHumanReadableCopyright", os.environ.get("BUNDLE_COPYRIGHT"))
+setv("CFBundleShortVersionString", os.environ.get("VERSION"))
+setv("CFBundleVersion", os.environ.get("BUILD"))
+plist_path.parent.mkdir(parents=True, exist_ok=True)
+plist_path.write_bytes(plistlib.dumps(data, sort_keys=False, fmt=plistlib.FMT_XML))
+print("[*] Info.plist Updated", plist_path)
+PY
+  echo "[*] Copying platform plugin..."
+  cp /osxcross/macports/pkgs/opt/local/libexec/q56/plugins/platforms/libqcocoa.dylib "$MAC_APP_DIR/$PLATFORMS/"
+  mkdir -p "$MAC_APP_DIR/$PLUGINS/imageformats"
+  echo "[*] Copying image format plugins..."
+  cp /osxcross/macports/pkgs/opt/local/libexec/qt5/plugins/imageformats/* "$MAC_APP_DIR/$PLUGINS/imageformats/"
+  # Qt conf
+  echo "[*] Generating qt.conf..."
+  cat > "$MAC_APP_DIR/$RESOURCES/qt.conf" <<EOF
+[Paths]
+Plugins = PlugIns
+Imports = Resources/qml
+QmlImports = Resources/qml
+EOF
+  echo "[*] Patching binary and dependencies..."
+  mkdir $MAC_APP_DIR/$LIBS
+  cp -L /osxcross/macports/pkgs/opt/local/libexec/ffmpeg7/lib/libavdevice.61.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/libexec/ffmpeg7/lib/libavcodec.61.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/libexec/ffmpeg7/lib/libavfilter.10.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/libexec/ffmpeg7/lib/libavformat.61.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/libexec/ffmpeg7/lib/libswresample.5.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/libexec/ffmpeg7/lib/libswscale.8.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/libexec/ffmpeg7/lib/libavutil.59.dylib $MAC_APP_DIR/$FRAMEWORKS
+  # additional libraries for codecs
+  cp -L /opt/local/lib/libbz2.1.0.dylib $MAC_APP_DIR/$FRAMEWORKS
+  ##TODO install_name_tool -change /opt/local/lib/libdbus-1.3.dylib @executable_path/../Frameworks/libdbus-1.3.dylib
+  cp -L /opt/local/lib/libz.1.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /opt/local/lib/libiconv.2.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /opt/local/lib/liblzma.5.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/libexec/ffmpeg7/lib/libpostproc.58.dylib $MAC_APP_DIR/$FRAMEWORKS
+  while IFS= read -r -d '' DY; do
+    rewrite_deps "$DY"
+  done < <(find "$MAC_APP_DIR/$FRAMEWORKS" -maxdepth 1 -type f -name '*.dylib' -print0)
+  install_name_tool -add_rpath "@executable_path/../Frameworks" \
+    $MAC_APP_DIR/$MACOS/$BINARY
+  copy_and_patch_deps "$MAC_APP_DIR/$MACOS/$BINARY"
+  cp /osxcross/macports/pkgs/opt/local/lib/libdbus-1.3.dylib $MAC_APP_DIR/$FRAMEWORKS
+  mkdir -p $MAC_APP_DIR/$PLUGINS/styles
+  cp /osxcross/macports/pkgs/opt/local/libexec/qt5/plugins/styles/* $MAC_APP_DIR/$PLUGINS/styles/
+  ./scripts/macdeployqtfix.py "$MAC_APP_DIR/$MACOS/$BINARY" /osxcross/macports/pkgs/opt/local/libexec/qt5
+  install_name_tool \
+    -change /opt/local/lib/libdbus-1.3.dylib \
+    @executable_path/../Frameworks/libdbus-1.3.dylib \
+    $MAC_APP_DIR/$FRAMEWORKS/QtDBus.framework/Versions/A/QtDBus
+  # rewrite EVERY Mach-O in the bundle that references /opt/local/lib/*
+  find "$MAC_APP_DIR" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 \
+  | while IFS= read -r -d '' f; do
+    deps=$(otool -L "$f" | sed '1d' | awk '{print $1}' | grep '^/opt/local/lib/' || true)
+    [ -z "$deps" ] && continue
+    while IFS= read -r dep; do
+      bn="$(basename "$dep")"
+      # prefer @rpath
+      install_name_tool -change "$dep" "@rpath/$bn" "$f" 2>/dev/null || true
+      # fallback if we don't want rpath:
+      # install_name_tool -change "$dep" "@executable_path/../Frameworks/$bn" "$f" 2>/dev/null || true
+    done <<< "$deps"
+  done
+  # give the libs in Frameworks their own install-id as @rpath/*
+  find "$MAC_APP_DIR/$FRAMEWORKS" -maxdepth 1 -type f -name "*.dylib" -print0 \
+  | while IFS= read -r -d '' f; do
+    bn="$(basename "$f")"
+    install_name_tool -id "@rpath/$bn" "$f" 2>/dev/null || true
+  done
+  echo "[*] Stripping unwanted architecture from universal libs.."
+  if [[ "$GOARCH" == "arm64" ]]; then
+  echo "[*] Stripping amd64 from target arm64 universal libs..."
+  # strip every Mach-O inside the bundle that has amd64
+  find "$MAC_APP_DIR" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" -o -name "*.framework" \) -print0 \
+  | while IFS= read -r -d '' f; do
+    if lipo -info "$f" 2>/dev/null | grep -q 'amd644' && lipo -info "$f" 2>/dev/null | grep -q 'arm64'; then
+      tmp="${f}.arm64"
+      lipo -remove amd64 -output "$tmp" "$f" && mv "$tmp" "$f"
+    fi
+  done
+  else
+  # strip every Mach-O inside the bundle that has arm64
+  echo "[*] Stripping arm64 from target amd64 universal libs..."
+  find "$MAC_APP_DIR" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" -o -name "*.framework" \) -print0 \
+  | while IFS= read -r -d '' f; do
+    if lipo -info "$f" 2>/dev/null | grep -q 'arm64' && lipo -info "$f" 2>/dev/null | grep -q 'x86_64'; then
+      tmp="${f}.x86_64"
+      lipo -remove arm64 -output "$tmp" "$f" && mv "$tmp" "$f"
+    fi
+  done
+  fi
+  pushd $REL_DIR
+  if [ -f "$ZIP_NAME" ]; then
+    echo "[*] Removing old zip..."
+    rm -f "$ZIP_NAME"
+  fi
+  echo "[*] Compressing the archive..."
+  zip -ry "$ZIP_NAME" "$APP.app" > /dev/null
+  rm -rf "$APP.app"
+  popd
+  echo "[*] App bundled successfully into $MAC_APP_DIR"
+  echo "[*] Bundle packed into $ZIP_NAME"
+  if [[ "$GOARCH" == "arm64" ]]; then
+    echo "This bundle for Mac Arm64 should be signed on Mac Computer.."
+    echo "Use.: codesign --force --deep --sign - $MAC_APP_DIR"
+  fi
+  exit 0
+else
+  echo "Unsupported OS on local build machine"
+  exit 1
+fi

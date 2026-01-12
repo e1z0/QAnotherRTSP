@@ -59,6 +59,47 @@ ENV PATH=/usr/local/go/bin:$PATH
 ENV PKG_CONFIG_PATH=/opt/local/libexec/qt5/lib/pkgconfig/
 ENV CGO_CXXFLAGS="-Wno-ignored-attributes -D_Bool=bool"
 
-COPY ./build-ffmpeg /build-ffmpeg
-RUN /build-ffmpeg arm64
+RUN set -eux; \
+    DARWIN_VER="$({ arm64-apple-darwin22.2-clang -v 2>&1 || true; } | sed -n 's/.*-darwin\([0-9][0-9]*\).*/\1/p' | head -n1)"; \
+    [ -n "$DARWIN_VER" ]; \
+    echo "DARWIN_VER=$DARWIN_VER" >> /etc/profile.d/osxcross.sh; \
+    echo "export PKG_CONFIG=arm64-apple-darwin${DARWIN_VER}-pkg-config" >> /etc/profile.d/osxcross.sh
+ENV BASH_ENV=/etc/profile.d/osxcross.sh
+ENV PKG_CONFIG_PATH=/osxcross/macports/pkgs/opt/local/lib/pkgconfig
+ENV PKG_CONFIG_LIBDIR=/osxcross/macports/pkgs/opt/local/lib/pkgconfig
+ENV CFLAGS="-I/osxcross/macports/pkgs/opt/local/include"
+ENV LDFLAGS="-L/osxcross/macports/pkgs/opt/local/lib"
+
+RUN wget -q https://ffmpeg.org/releases/ffmpeg-7.0.3.tar.gz -O /tmp/ffmpeg.tar.gz && tar xzf /tmp/ffmpeg.tar.gz -C /tmp/ && \
+    cd /tmp/ffmpeg-7.0.3 && \
+    ./configure \
+    --prefix=/osxcross/macports/pkgs/opt/local/libexec/ffmpeg7 \
+    --enable-cross-compile \
+    --target-os=darwin \
+    --arch=arm64 \
+    --cc="arm64-apple-darwin22.2-clang" --cxx="arm64-apple-darwin22.2-clang++" \
+    --ar="arm64-apple-darwin22.2-ar" --ranlib="arm64-apple-darwin22.2-ranlib" \
+    --nm="arm64-apple-darwin22.2-nm" --strip="arm64-apple-darwin22.2-strip" \
+    --install-name-dir='@rpath' \
+    --sysroot="/osxcross/SDK/MacOSX13.1.sdk" \
+    --extra-cflags="-isysroot /osxcross/SDK/MacOSX13.1.sdk -mmacosx-version-min=13.0 -std=c11" \
+    --extra-ldflags="-isysroot /osxcross/SDK/MacOSX13.1.sdk -mmacosx-version-min=13.0 -Wl,-headerpad_max_install_names" \
+    --host-cc="clang" --host-cflags="-std=c11" \
+    --disable-librsvg --disable-xlib --disable-libxcb \
+    --disable-vulkan --disable-opencl \
+    --disable-doc --disable-static --enable-shared \
+    --disable-programs \
+    --enable-videotoolbox \
+    --enable-audiotoolbox \
+    --enable-network --enable-securetransport \
+    --enable-swscale --enable-swresample --enable-nonfree \
+    --enable-libfreetype \
+    --enable-libcodec2 \
+    --enable-libopenjpeg \
+    --enable-libaom \
+    --enable-libmp3lame --enable-libopus \
+    --enable-libtheora --enable-libx264 \
+    --enable-libx265 \
+    --enable-opengl --enable-gpl && \
+    make && make install
 
