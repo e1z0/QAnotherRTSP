@@ -15,7 +15,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
 		curl \
                 python3 \
                 zip \
-		pkg-config wget nano procps make yasm unzip && \
+		pkg-config wget nano procps make yasm unzip file git && \
     apt-get clean
 
 ENV PATH="/osxcross/bin:$PATH"
@@ -57,19 +57,10 @@ ENV GOOS=darwin
 ENV GOARCH=amd64
 ENV CGO_ENABLED=1
 ENV PATH=/usr/local/go/bin:$PATH
-ENV PKG_CONFIG_PATH=/opt/local/libexec/qt5/lib/pkgconfig/
 ENV CGO_CXXFLAGS="-Wno-ignored-attributes -D_Bool=bool"
 
-RUN set -eux; \
-    DARWIN_VER="$({ x86_64-apple-darwin22.2-clang -v 2>&1 || true; } | sed -n 's/.*-darwin\([0-9][0-9]*\).*/\1/p' | head -n1)"; \
-    [ -n "$DARWIN_VER" ]; \
-    echo "DARWIN_VER=$DARWIN_VER" >> /etc/profile.d/osxcross.sh; \
-    echo "export PKG_CONFIG=x86_64-apple-darwin${DARWIN_VER}-pkg-config" >> /etc/profile.d/osxcross.sh
-ENV BASH_ENV=/etc/profile.d/osxcross.sh
-ENV PKG_CONFIG_PATH=/osxcross/macports/pkgs/opt/local/lib/pkgconfig
-ENV PKG_CONFIG_LIBDIR=/osxcross/macports/pkgs/opt/local/lib/pkgconfig
-ENV CFLAGS="-I/osxcross/macports/pkgs/opt/local/include"
-ENV LDFLAGS="-L/osxcross/macports/pkgs/opt/local/lib"
+
+ENV PKG_CONFIG_PATH=/opt/local/libexec/qt5/lib/pkgconfig:/osxcross/macports/pkgs/opt/local/lib/pkgconfig:/osxcross/macports/pkgs/opt/local/libexec/ffmpeg7/lib/pkgconfig
 
 RUN wget -q https://ffmpeg.org/releases/ffmpeg-7.0.3.tar.gz -O /tmp/ffmpeg.tar.gz && tar xzf /tmp/ffmpeg.tar.gz -C /tmp/ && \
     cd /tmp/ffmpeg-7.0.3 && \
@@ -83,8 +74,8 @@ RUN wget -q https://ffmpeg.org/releases/ffmpeg-7.0.3.tar.gz -O /tmp/ffmpeg.tar.g
     --nm="x86_64-apple-darwin22.2-nm" --strip="x86_64-apple-darwin22.2-strip" \
     --install-name-dir='@rpath' \
     --sysroot="/osxcross/SDK/MacOSX13.1.sdk" \
-    --extra-cflags="-isysroot /osxcross/SDK/MacOSX13.1.sdk -mmacosx-version-min=13.0 -std=c11" \
-    --extra-ldflags="-isysroot /osxcross/SDK/MacOSX13.1.sdk -mmacosx-version-min=13.0 -Wl,-headerpad_max_install_names" \
+    --extra-cflags="-I/osxcross/macports/pkgs/opt/local/include -isysroot /osxcross/SDK/MacOSX13.1.sdk -mmacosx-version-min=13.0 -std=c11" \
+    --extra-ldflags="-L/osxcross/macports/pkgs/opt/local/lib -isysroot /osxcross/SDK/MacOSX13.1.sdk -mmacosx-version-min=13.0 -Wl,-headerpad_max_install_names" \
     --host-cc="clang" --host-cflags="-std=c11" \
     --disable-librsvg --disable-xlib --disable-libxcb \
     --disable-vulkan --disable-opencl \

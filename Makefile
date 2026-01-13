@@ -279,19 +279,19 @@ build_mac: check-qt
 
 docker_mactel_build: res ## Build target for MacOS Intel (using Docker container)
 	@if test -f $(REL_MACOS_BIN); then rm $(REL_MACOS_BIN); fi
-	$(call RUN_DOCKER,darwin,amd64,amd64,$(MACOSINTELIMAGE),$(call GO_BUILD,,,$(REL_MACOS_BIN),,),,)
+	$(call RUN_DOCKER,darwin,amd64,amd64,$(OSXINTELDOCKER),$(call GO_BUILD,,,$(REL_MACOS_BIN),,),,)
 
 docker_macarm_build: res ## Build target for MacOS Arm64 (using Docker container)
 	@if test -f $(REL_MACOS_BIN); then rm $(REL_MACOS_BIN); fi
-	$(call RUN_DOCKER,darwin,arm64,arm64,$(MACOSARMIMAGE),$(call GO_BUILD,,,$(REL_MACOS_BIN),,),,)
+	$(call RUN_DOCKER,darwin,arm64,arm64,$(OSXARMDOCKER),$(call GO_BUILD,,,$(REL_MACOS_BIN),,),,)
 
 
 
-docker_linux_build: docker_linux
+docker_linux_build: docker_linux ## Build Linux x86_64 target
 	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
 	@if test -f $(REL_LINUX_BIN); then rm $(REL_LINUX_BIN); fi
 	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),$(call GO_BUILD,,,$(REL_LINUX_BIN)),,)
-docker_linux_build_arm64: docker_linux_arm64
+docker_linux_build_arm64: docker_linux_arm64 ## build Linux x86 target
 	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
 	@if test -f $(REL_LINUX_BIN); then rm $(REL_LINUX_BIN); fi
 	$(call RUN_DOCKER,linux,arm64,aarch64,$(LINUXARM64DOCKER),$(call GO_BUILD,,,$(REL_LINUX_BIN)),,)
@@ -303,9 +303,9 @@ ifeq ($(OS),Linux)
 	@ARCH_LINE="$$(file -b "$(REL_MACOS_BIN)" 2>/dev/null || true)"; \
 	if [ -z "$$ARCH_LINE" ]; then echo "Error: $(REL_MACOS_BIN) not found" >&2; exit 1; fi; \
 	if echo "$$ARCH_LINE" | grep -qE 'arm64|aarch64'; then \
-		IMG="$(MACOSARMIMAGE)"; VAR1=arm64; VAR2=amd64; \
+		IMG="$(OSXINTELDOCKER)"; VAR1=arm64; VAR2=amd64; \
 	elif echo "$$ARCH_LINE" | grep -qE 'x86_64|amd64'; then \
-		IMG="$(MACOSINTELIMAGE)"; VAR1=amd64; VAR2=amd64; \
+		IMG="$(OSXARMDOCKER)"; VAR1=amd64; VAR2=amd64; \
 	else \
 		echo "Error: Unsupported mac binary arch: $$ARCH_LINE" >&2; exit 1; \
 	fi;
