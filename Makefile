@@ -305,9 +305,9 @@ ifeq ($(OS),Linux)
 	@ARCH_LINE="$$(file -b "$(REL_MACOS_BIN)" 2>/dev/null || true)"; \
 	if [ -z "$$ARCH_LINE" ]; then echo "Error: $(REL_MACOS_BIN) not found" >&2; exit 1; fi; \
 	if echo "$$ARCH_LINE" | grep -qE 'arm64|aarch64'; then \
-		IMG="$(OSXINTELDOCKER)"; VAR1=arm64; VAR2=amd64; \
+		IMG="$(OSXARMDOCKER)"; VAR1=arm64; VAR2=amd64; \
 	elif echo "$$ARCH_LINE" | grep -qE 'x86_64|amd64'; then \
-		IMG="$(OSXARMDOCKER)"; VAR1=amd64; VAR2=amd64; \
+		IMG="$(OSXINTELDOCKER)"; VAR1=amd64; VAR2=amd64; \
 	else \
 		echo "Error: Unsupported mac binary arch: $$ARCH_LINE" >&2; exit 1; \
 	fi;
