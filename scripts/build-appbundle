@@ -237,7 +237,8 @@ plist_path.write_bytes(plistlib.dumps(data, sort_keys=False, fmt=plistlib.FMT_XM
 print("[*] Info.plist Updated", plist_path)
 PY
   echo "[*] Copying platform plugin..."
-  cp /osxcross/macports/pkgs/opt/local/libexec/q56/plugins/platforms/libqcocoa.dylib "$MAC_APP_DIR/$PLATFORMS/"
+  cp /osxcross/macports/pkgs/opt/local/libexec/qt5/plugins/platforms/libqcocoa.dylib "$MAC_APP_DIR/$PLATFORMS/"
+
   mkdir -p "$MAC_APP_DIR/$PLUGINS/imageformats"
   echo "[*] Copying image format plugins..."
   cp /osxcross/macports/pkgs/opt/local/libexec/qt5/plugins/imageformats/* "$MAC_APP_DIR/$PLUGINS/imageformats/"
@@ -264,6 +265,17 @@ EOF
   cp -L /opt/local/lib/libz.1.dylib $MAC_APP_DIR/$FRAMEWORKS
   cp -L /opt/local/lib/libiconv.2.dylib $MAC_APP_DIR/$FRAMEWORKS
   cp -L /opt/local/lib/liblzma.5.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/lib/libaom.3.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/lib/libcodec2.1.2.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /opt/local/lib/liblpcnetfreedv.0.5.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/lib/libmp3lame.0.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/lib/libopenjp2.7.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/lib/libopus.0.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/lib/libtheoraenc.1.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/lib/libtheoradec.1.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/lib/libogg.0.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/lib/libx264.165.dylib $MAC_APP_DIR/$FRAMEWORKS
+  cp -L /osxcross/macports/pkgs/opt/local/lib/libx265.215.dylib $MAC_APP_DIR/$FRAMEWORKS
   cp -L /osxcross/macports/pkgs/opt/local/libexec/ffmpeg7/lib/libpostproc.58.dylib $MAC_APP_DIR/$FRAMEWORKS
   while IFS= read -r -d '' DY; do
     rewrite_deps "$DY"
@@ -274,11 +286,16 @@ EOF
   cp /osxcross/macports/pkgs/opt/local/lib/libdbus-1.3.dylib $MAC_APP_DIR/$FRAMEWORKS
   mkdir -p $MAC_APP_DIR/$PLUGINS/styles
   cp /osxcross/macports/pkgs/opt/local/libexec/qt5/plugins/styles/* $MAC_APP_DIR/$PLUGINS/styles/
+  cp -r /osxcross/macports/pkgs/opt/local/libexec/qt5/lib/QtPrintSupport.framework $MAC_APP_DIR/$FRAMEWORKS/
+  cp -r /osxcross/macports/pkgs/opt/local/libexec/qt5/lib/QtDBus.framework/ $MAC_APP_DIR/$FRAMEWORKS/
   ./scripts/macdeployqtfix.py "$MAC_APP_DIR/$MACOS/$BINARY" /osxcross/macports/pkgs/opt/local/libexec/qt5
-  install_name_tool \
-    -change /opt/local/lib/libdbus-1.3.dylib \
-    @executable_path/../Frameworks/libdbus-1.3.dylib \
+  # Fix QtDBus.framework dependencies to app-local paths
+  install_name_tool -change "/opt/local/lib/libdbus-1.3.dylib" \
+    "@executable_path/../Frameworks/libdbus-1.3.dylib" \
     $MAC_APP_DIR/$FRAMEWORKS/QtDBus.framework/Versions/5/QtDBus
+  # fix other libs
+  install_name_tool -id "@executable_path/../Frameworks/QtCore.framework/Versions/5/QtCore" \
+    "$MAC_APP_DIR/$FRAMEWORKS/QtCore.framework/Versions/5/QtCore"
   # rewrite EVERY Mach-O in the bundle that references /opt/local/lib/*
   find "$MAC_APP_DIR" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 \
   | while IFS= read -r -d '' f; do
@@ -320,6 +337,39 @@ EOF
     fi
   done
   fi
+
+  # self check
+  BAD_RE='(^/opt/local/|^/usr/local/|/opt/local/libexec/qt5/lib/)'
+
+  # Only scan Mach-O files (exec/dylib/framework/plugin)
+  is_macho() {
+    file -b "$1" 2>/dev/null | grep -Eq 'Mach-O'
+  }
+  echo "Scanning: $MAC_APP_DIR for bad library references"
+  echo
+  found=0
+
+  # Find candidate binaries fast: executables + dylibs + frameworks + plugins
+  while IFS= read -r -d '' f; do
+    is_macho "$f" || continue
+
+    # collect bad refs from otool output (skip the first line "file:")
+    bad_lines="$(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -E "$BAD_RE" || true)"
+    [[ -n "$bad_lines" ]] || continue
+
+    found=1
+    echo "=== $f ==="
+    echo "$bad_lines" | sed 's/^/  - /'
+    echo
+  done < <(find "$MAC_APP_DIR" -type f -print0)
+
+  if [[ $found -eq 0 ]]; then
+    echo "OK: no invalid references found (no /opt/local or /usr/local deps)."
+  else
+    echo "We have failed: invalid references were found (see above)."
+    exit 3
+  fi
+  # end of self check
   pushd $REL_DIR
   if [ -f "$ZIP_NAME" ]; then
     echo "[*] Removing old zip..."
