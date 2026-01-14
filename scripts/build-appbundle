@@ -377,7 +377,7 @@ EOF
   fi
   echo "[*] Compressing the archive..."
   zip -ry "$ZIP_NAME" "$APP.app" > /dev/null
-  #rm -rf "$APP.app"
+  rm -rf "$APP.app"
   popd
   echo "[*] App bundled successfully into $MAC_APP_DIR"
   echo "[*] Bundle packed into $ZIP_NAME"
