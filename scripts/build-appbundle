@@ -43,8 +43,8 @@ copy_and_patch_deps() {
             fi
 
             local fwlib=""
-            if [[ -f "$fwdest/Versions/A/$fwname" ]]; then
-                fwlib="$fwdest/Versions/A/$fwname"
+            if [[ -f "$fwdest/Versions/5/$fwname" ]]; then
+                fwlib="$fwdest/Versions/5/$fwname"
             elif [[ -f "$fwdest/$fwname" ]]; then
                 fwlib="$fwdest/$fwname"
             else
@@ -164,17 +164,17 @@ if [[ "$OS" == "Darwin" ]]; then
   # Copy the required QtDBus Framework
   ditto "${QT5_PREFIX}/lib/QtDBus.framework" "${MAC_APP_DIR}/Contents/Frameworks/QtDBus.framework"
   # Fix QtDBus.framework install name (id) to @rpath (standard for frameworks)
-  install_name_tool -id "@rpath/QtDBus.framework/Versions/A/QtDBus" \
-    "${MAC_APP_DIR}/Contents/Frameworks/QtDBus.framework/Versions/A/QtDBus"
+  install_name_tool -id "@rpath/QtDBus.framework/Versions/5/QtDBus" \
+    "${MAC_APP_DIR}/Contents/Frameworks/QtDBus.framework/Versions/5/QtDBus"
   # Fix QtDBus.framework dependencies to app-local paths
   install_name_tool \
-    -change "/opt/homebrew/opt/qtbase/lib/QtDBus.framework/Versions/A/QtDBus" \
-    "@rpath/QtDBus.framework/Versions/A/QtDBus" \
-    -change "@rpath/QtCore.framework/Versions/A/QtCore" \
-    "@loader_path/../../../../Frameworks/QtCore.framework/Versions/A/QtCore" \
+    -change "/opt/homebrew/opt/qtbase/lib/QtDBus.framework/Versions/5/QtDBus" \
+    "@rpath/QtDBus.framework/Versions/5/QtDBus" \
+    -change "@rpath/QtCore.framework/Versions/5/QtCore" \
+    "@loader_path/../../../../Frameworks/QtCore.framework/Versions/5/QtCore" \
     -change "/opt/homebrew/opt/dbus/lib/libdbus-1.3.dylib" \
     "@loader_path/../../../../libs/libdbus-1.3.dylib" \
-    "${MAC_APP_DIR}/Contents/Frameworks/QtDBus.framework/Versions/A/QtDBus"
+    "${MAC_APP_DIR}/Contents/Frameworks/QtDBus.framework/Versions/5/QtDBus"
   dylibbundler -od -b -x ./${MAC_APP_DIR}/Contents/MacOS/${BINARY} -d ./${MAC_APP_DIR}/Contents/libs
   # Copy libdbus
   ditto "${DBUS_PREFIX}/lib/libdbus-1.dylib" "${MAC_APP_DIR}/Contents/libs/libdbus-1.3.dylib"
@@ -278,7 +278,7 @@ EOF
   install_name_tool \
     -change /opt/local/lib/libdbus-1.3.dylib \
     @executable_path/../Frameworks/libdbus-1.3.dylib \
-    $MAC_APP_DIR/$FRAMEWORKS/QtDBus.framework/Versions/A/QtDBus
+    $MAC_APP_DIR/$FRAMEWORKS/QtDBus.framework/Versions/5/QtDBus
   # rewrite EVERY Mach-O in the bundle that references /opt/local/lib/*
   find "$MAC_APP_DIR" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 \
   | while IFS= read -r -d '' f; do

@@ -8,6 +8,8 @@ LINES := $(shell wc -l $(SRC)/*.go | grep total | awk '{print $$1}')
 REL_LINUX_BIN := $(BINARY)-linux
 REL_MACOS_BIN := $(BINARY)-mac
 REL_WINDOWS_BIN := $(BINARY)-win.exe
+LINUX_SKEL := resources/linux-skeleton
+MACOS_SKEL := resources/macos-skeleton
 REL_DIR := release
 MAC_APP_DIR := $(REL_DIR)/$(APP).app
 ARCH := $(shell uname -m)
@@ -171,7 +173,7 @@ define APP_BUNDLE
 		"Type=Application" \
 		"Categories=Utility;" \
 		> "$(LINUX_SKEL)/$(APP).desktop"; \
-	./utils/linuxdeploy-${2}/linuxdeploy-${2}.AppImage \
+	/linuxdeploy-${2}/linuxdeploy-${2}.AppImage \
 		--appdir $(LINUX_SKEL)/appDir \
 		--desktop-file $(LINUX_SKEL)/$(APP).desktop \
 		--icon-file $(LINUX_SKEL)/$(APP).png \
@@ -244,7 +246,7 @@ release_linux: reldir docker_linux_build ## Release build for Linux (creates .ap
 	@if ! test -f "$(REL_LINUX_BIN)"; then echo "Linux binaries not found (required for release target)."; exit 1; fi
 	@if test -d $(LINUX_SKEL)/appDir; then rm -rf $(LINUX_SKEL)/appDir; fi
 	@if test -f "$(REL_DIR)/$(APP)-x86_64.AppImage"; then rm -f "$(REL_DIR)/$(APP)-x86_64.AppImage"; fi
-	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUXDOCKERIMAGE),$(call APP_BUNDLE,$(REL_LINUX_BIN),x86_64),1,)
+	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),$(call APP_BUNDLE,$(REL_LINUX_BIN),x86_64),1,)
 	if [ -f $(APP)-x86_64.AppImage ]; then \
 		rm -rf $(LINUX_SKEL)/appDir; \
 		mv $(APP)-x86_64.AppImage $(REL_DIR)/$(APP)-Linux-x86_64.AppImage; \
@@ -255,7 +257,7 @@ release_linux_arm64: reldir docker_linux_build_arm64 ## Release build for Linux 
 	@if ! test -f "$(REL_LINUX_BIN)"; then echo "Linux binaries not found (required for release target)."; exit 1; fi
 	@if test -d $(LINUX_SKEL)/appDir; then rm -rf $(LINUX_SKEL)/appDir; fi
 	@if test -f "$(REL_DIR)/$(APP)-aarch64.AppImage"; then rm -f "$(REL_DIR)/$(APP)-aarch64.AppImage"; fi
-	$(call RUN_DOCKER,linux,arm64,aarch64,$(LINUX_AARCH_DOCKER),$(call APP_BUNDLE,$(REL_LINUX_BIN),aarch64),1,)
+	$(call RUN_DOCKER,linux,arm64,aarch64,$(LINUXARM64DOCKER),$(call APP_BUNDLE,$(REL_LINUX_BIN),aarch64),1,)
 	if [ -f $(APP)-aarch64.AppImage ]; then \
 		rm -rf $(LINUX_SKEL)/appDir; \
 		mv $(APP)-aarch64.AppImage $(REL_DIR)/$(APP)-Linux-aarch64.AppImage; \
@@ -325,6 +327,14 @@ endif
 
 .PHONY: build check-qt
 
+
+# Enter Linux x86_64 docker
+docker_linux_enter: ## Enter docker build environment for Linux x86_64
+	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),bash,1,1)
+# Enter Linux aarch64 docker
+docker_linux_arm64_enter: ## Enter docker build environment for Linux Aarch64
+	$(call RUN_DOCKER,linux,arm64,aarch64,$(LINUXARM64DOCKER),bash,1,1)
+
 # Enter MacOS x86_64 docker
 docker_mactel_enter: ## Enter docker build environment for MacOS Intel
 	$(call RUN_DOCKER,darwin,amd64,amd64,$(OSXINTELDOCKER),bash,,1)
@@ -336,10 +346,6 @@ docker_macarm_enter: ## Enter docker build environment for MacOS ARM
 # Enter Windows docker
 docker_win_enter: ## Enter docker build environment for Windows
 	$(call RUN_DOCKER,windows,amd64,amd64,$(WINDOCKERIMAGE),bash,,1)
-
-# Enter Linux docker
-docker_linux_enter: docker_linux
-	$(call RUN_DOCKER,linux,amd64,x86_64,$(LINUX64DOCKER),bash,1,1)
 
 check-qt:
 	@if [ -z "$(QT5_PREFIX)" ]; then \
