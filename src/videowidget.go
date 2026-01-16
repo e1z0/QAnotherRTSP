@@ -219,6 +219,34 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 			}
 		}
 
+		// --- Recording pill (bottom-right) ---
+		if w.owner != nil && w.owner.IsRecording() {
+			txt := "Recording"
+
+			fm := qt.NewQFontMetrics(p.Font())
+			textRect := fm.BoundingRectWithText(txt)
+			pillW := textRect.Width() + 16
+			pillH := textRect.Height() + 10
+
+			// Place at bottom-right with small margin
+			margin := 8
+			x := w.Width() - pillW - margin
+			y := w.Height() - pillH - margin
+
+			// Semi-transparent dark background
+			bgColor := qt.NewQColor11(0, 0, 0, 180)
+			p.FillRect6(qt.NewQRect4(x, y, pillW, pillH), bgColor)
+
+			// Red text
+			pen := qt.NewQPen3(qt.NewQColor11(255, 0, 0, 230))
+			p.SetPenWithPen(pen)
+
+			// Baseline: a bit above bottom of pill
+			textX := x + 8
+			textY := y + pillH - fm.Descent() - 2
+			p.DrawText2(qt.NewQPoint2(textX, textY), txt)
+		}
+
 	})
 	w.SetMouseTracking(true) // track hover to update resize cursor
 
@@ -249,6 +277,9 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 			super(ev)
 			return
 		}
+
+		env.activeWin = w.owner
+
 		if globalConfig.ActiveOnWin && !w.IsFullScreen() {
 			log.Printf("focus frameless activated")
 			for _, w := range wins {
@@ -261,6 +292,8 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 				w.win.SetFocus()
 			}
 		}
+
+		log.Printf("active window set to: %s", env.activeWin.cfg.Name)
 
 		top := w.QWidget.Window()
 		if top == nil {
@@ -303,7 +336,9 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 			super(ev)
 			return
 		}
-		log.Printf("[%s] frameless window moved to %dx%d", w.owner.cfg.Name, ev.Pos().X(), ev.Pos().Y())
+		if DEBUG {
+			log.Printf("[%s] frameless window moved to %dx%d", w.owner.cfg.Name, ev.Pos().X(), ev.Pos().Y())
+		}
 
 		top := w.QWidget.Window()
 		if top == nil {

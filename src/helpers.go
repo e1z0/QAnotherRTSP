@@ -294,3 +294,24 @@ func addSep(m *qt.QMenu) {
 	sep.SetSeparator(true)
 	addAct(m, sep)
 }
+
+// sanitizeFSComponent makes a string safe to use as a single path component.
+func sanitizeFSComponent(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "camera"
+	}
+	// Very conservative: replace things that can break paths
+	replacer := strings.NewReplacer(
+		"/", "_",
+		"\\", "_",
+		":", "_",
+		"*", "_",
+		"?", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+	)
+	return replacer.Replace(s)
+}
