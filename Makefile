@@ -168,6 +168,8 @@ build_mac: check-qt
 	@if test -f $(SRC)/resource.syso; then rm $(SRC)/resource.syso; fi
 	CGO_ENABLED=1 \
         CGO_CXXFLAGS="-std=c++17 -stdlib=libc++ -fPIC" \
+	CGO_CFLAGS="-mmacosx-version-min=15.0" \
+	CGO_LDFLAGS="-mmacosx-version-min=15.0" \
 	PATH="$(QT5_PREFIX)/bin:$$PATH" \
 	LDFLAGS="-L$(QT5_PREFIX)/lib" \
 	CPPFLAGS="-I$(QT5_PREFIX)/include" \
