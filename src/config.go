@@ -56,6 +56,10 @@ type AppConfig struct {
 	ActiveOnWin     bool           `yaml:"activate_in_win,omitempty"`
 	Formations      []Formation    `yaml:"formations,omitempty"`
 	LastFormation   string         `yaml:"last_formation,omitempty"`
+	// GUI refresh tuning
+	LimitGuiRefresh   bool `yaml:"limit_gui_refresh,omitempty"`    // cap GUI refresh interval
+	GuiRefreshMs      int  `yaml:"gui_refresh_ms,omitempty"`       // ms; used when LimitGuiRefresh=true
+	RepaintOnNewFrame bool `yaml:"repaint_on_new_frame,omitempty"` // only repaint when a new frame arrives
 	// overlays
 	HealthChip   bool `yaml:"health_chip,omitempty"` // show 0–5 health chip on each camera
 	ShowFPS      bool `yaml:"show_fps,omitempty"`
