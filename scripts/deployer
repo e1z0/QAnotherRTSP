@@ -1,5 +1,19 @@
 #!/bin/bash
 
+LOCKFILE="/var/lock/deployer.lock"
+
+# open fd 9 for writing (keeps lock held until script exits)
+exec 9>"$LOCKFILE" || exit 1
+
+# wait until we can get the lock
+while ! flock -n 9; do
+  echo "Lock is held by another process, waiting..."
+  sleep 2
+done
+
+# record pid (optional)
+echo "$$" 1>&9
+
 if ! command -v make >/dev/null 2>&1; then
   echo "ERROR: 'make' is required but was not found in PATH." >&2
   exit 1
