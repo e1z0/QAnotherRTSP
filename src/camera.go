@@ -63,6 +63,7 @@ type CamWindow struct {
 	tmpBGRA       []byte
 	tmpStride     int
 	repaintTimer  *qt.QTimer
+	lastPaintSeq  uint64
 	contextHooked bool
 	// some statistics metrics / overlay
 	framesDecoded int64 // total decoded frames
@@ -297,9 +298,16 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 	// when creating it (in newCamWindow)
 	t := qt.NewQTimer2(win.QObject) // parent to the window
 	w.repaintTimer = t
-	t.SetInterval(33)
+	w.ApplyGuiRefreshSettings()
 	t.OnTimeout(func() {
 		if w != nil && w.view != nil {
+			if globalConfig.RepaintOnNewFrame {
+				seq, _, _, _ := w.buf.get()
+				if seq == 0 || seq == w.lastPaintSeq {
+					return
+				}
+				w.lastPaintSeq = seq
+			}
 			w.view.Present()
 		}
 	})
@@ -434,16 +442,59 @@ func (w *CamWindow) Close() {
 	default:
 		close(w.stop)
 	}
-	<-w.done
-
 	if w.repaintTimer != nil {
 		w.repaintTimer.Stop()
 		w.repaintTimer.DeleteLater()
 		w.repaintTimer = nil
 	}
+	if w.metricsTimer != nil {
+		w.metricsTimer.Stop()
+		w.metricsTimer.DeleteLater()
+		w.metricsTimer = nil
+	}
 	if w.win != nil {
 		w.win.Close()
 	}
+
+	// Don't block UI; log if the decoder doesn't stop promptly.
+	done := w.done
+	name := w.cfg.Name
+	go func() {
+		if done == nil {
+			return
+		}
+		select {
+		case <-done:
+			return
+		case <-time.After(2 * time.Second):
+			log.Printf("[%s] close: decoder still running after timeout", name)
+		}
+	}()
+}
+
+func (w *CamWindow) ApplyGuiRefreshSettings() {
+	if w == nil || w.repaintTimer == nil {
+		return
+	}
+	w.repaintTimer.SetInterval(guiRefreshIntervalMs())
+}
+
+func guiRefreshIntervalMs() int {
+	const defaultMs = 33
+	if !globalConfig.LimitGuiRefresh {
+		return defaultMs
+	}
+	ms := globalConfig.GuiRefreshMs
+	if ms <= 0 {
+		return defaultMs
+	}
+	if ms < 16 {
+		return 16
+	}
+	if ms > 1000 {
+		return 1000
+	}
+	return ms
 }
 
 func (w *CamWindow) setReconnectSoon() {

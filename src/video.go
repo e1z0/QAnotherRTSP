@@ -331,7 +331,11 @@ func (w *CamWindow) openAndDecode() error {
 		aCtx    *astiav.CodecContext
 		aFrame  *astiav.Frame
 		aPlayer oto.Player
+		aPipeR  *io.PipeReader
 		aPipeW  *io.PipeWriter
+		audioCh chan []byte
+		// signals audio writer exit
+		audioDone chan struct{}
 	)
 	if aIdx >= 0 {
 		aPar := fc.Streams()[aIdx].CodecParameters()
@@ -355,8 +359,20 @@ func (w *CamWindow) openAndDecode() error {
 		if aPlayer != nil {
 			_ = aPlayer.Close()
 		}
+		if audioCh != nil {
+			close(audioCh)
+		}
+		if aPipeR != nil {
+			_ = aPipeR.Close()
+		}
 		if aPipeW != nil {
 			_ = aPipeW.Close()
+		}
+		if audioDone != nil {
+			select {
+			case <-audioDone:
+			case <-time.After(500 * time.Millisecond):
+			}
 		}
 		if aCtx != nil {
 			aCtx.Free()
@@ -617,6 +633,8 @@ func (w *CamWindow) openAndDecode() error {
 	defer pkt.Free()
 	vf := astiav.AllocFrame()
 	defer vf.Free()
+	swFrame := astiav.AllocFrame()
+	defer swFrame.Free()
 
 	lastProgress := time.Now()
 
@@ -701,7 +719,26 @@ func (w *CamWindow) openAndDecode() error {
 							}
 							p.Play()
 							aPlayer = p
+							aPipeR = pr
 							aPipeW = pw
+							audioCh = make(chan []byte, 8)
+							audioDone = make(chan struct{})
+							go func() {
+								defer close(audioDone)
+								for {
+									select {
+									case <-w.stop:
+										return
+									case buf, ok := <-audioCh:
+										if !ok {
+											return
+										}
+										if _, err := aPipeW.Write(buf); err != nil {
+											return
+										}
+									}
+								}
+							}()
 						}
 
 						// For packed S16 mono: data[0] holds nb_samples * 2 bytes.
@@ -711,8 +748,15 @@ func (w *CamWindow) openAndDecode() error {
 							if need > len(pcm) {
 								need = len(pcm)
 							}
-							// Fire-and-forget; if the pipe back-pressures a bit, it's fine.
-							_, _ = aPipeW.Write(pcm[:need])
+							if audioCh != nil {
+								buf := make([]byte, need)
+								copy(buf, pcm[:need])
+								select {
+								case audioCh <- buf:
+								default:
+									// drop if writer is backed up
+								}
+							}
 						}
 					}
 					// start of audio recording block
@@ -840,12 +884,32 @@ func (w *CamWindow) openAndDecode() error {
 							w.cfg.Name, vf.PixelFormat().String(),
 							vf.Width(), vf.Height(), ls[0], ls[1], ls[2])
 					}
+					// If decoder returned hardware frames, transfer to software before scaling.
+					srcFrame := vf
+					if vf.HardwareFramesContext() != nil {
+						if swFrame == nil {
+							log.Printf("[%s] hwframe transfer skipped: no software frame", w.cfg.Name)
+							vf.Unref()
+							continue
+						}
+						if err := vf.TransferHardwareData(swFrame); err != nil {
+							log.Printf("[%s] hwframe transfer failed: %v", w.cfg.Name, err)
+							vf.Unref()
+							continue
+						}
+						swFrame.SetPts(vf.Pts())
+						srcFrame = swFrame
+					}
+
 					// measure usage on colorspace convert (this is usually the hottest bit)
 					t0 := time.Now()
-					bw, bh, bgra, err := scaler.toBGRA(vf)
+					bw, bh, bgra, err := scaler.toBGRA(srcFrame)
 					atomic.AddInt64(&w.busyNS, time.Since(t0).Nanoseconds())
 					if err != nil {
 						log.Printf("[%s] toBGRA error: %v", w.cfg.Name, err)
+						if srcFrame == swFrame {
+							swFrame.Unref()
+						}
 						vf.Unref()
 						continue
 					}
@@ -857,6 +921,9 @@ func (w *CamWindow) openAndDecode() error {
 					w.lastAdvance = time.Now()
 					lastProgress = time.Now()
 
+					if srcFrame == swFrame {
+						swFrame.Unref()
+					}
 					vf.Unref()
 				}
 			}

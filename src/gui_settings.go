@@ -53,6 +53,11 @@ type SettingsDialog struct {
 	bitrateCh    *qt.QCheckBox
 	dropsCh      *qt.QCheckBox
 	cpuCh        *qt.QCheckBox
+	// advanced
+	limitGuiCh         *qt.QCheckBox
+	guiRefreshSlider   *qt.QSlider
+	guiRefreshValueLbl *qt.QLabel
+	repaintOnNewCh     *qt.QCheckBox
 	// Cameras
 	cams []CameraConfig
 }
@@ -144,7 +149,43 @@ func newSettingsDialog(parent *qt.QWidget) *SettingsDialog {
 	// ===== Advanced tab (scaffold) =====
 	advancedPage := qt.NewQWidget(nil)
 	advancedForm := qt.NewQFormLayout(nil)
-	// TODO: Add advanced options here
+	d.limitGuiCh = qt.NewQCheckBox4("Limit GUI refresh rate", nil)
+	d.limitGuiCh.SetChecked(globalConfig.LimitGuiRefresh)
+	advancedForm.AddRow3("", d.limitGuiCh.QWidget)
+
+	d.repaintOnNewCh = qt.NewQCheckBox4("Repaint only on new frame", nil)
+	d.repaintOnNewCh.SetChecked(globalConfig.RepaintOnNewFrame)
+	advancedForm.AddRow3("", d.repaintOnNewCh.QWidget)
+
+	refreshMs := globalConfig.GuiRefreshMs
+	if refreshMs <= 0 {
+		refreshMs = 33
+	}
+	d.guiRefreshSlider = qt.NewQSlider4(qt.Horizontal, nil)
+	d.guiRefreshSlider.SetMinimum(16)
+	d.guiRefreshSlider.SetMaximum(250)
+	d.guiRefreshSlider.SetValue(refreshMs)
+	d.guiRefreshValueLbl = qt.NewQLabel(nil)
+	d.guiRefreshValueLbl.SetText(fmt.Sprintf("%d ms", refreshMs))
+
+	d.guiRefreshSlider.OnValueChanged(func(v int) {
+		d.guiRefreshValueLbl.SetText(fmt.Sprintf("%d ms", v))
+	})
+
+	refreshRow := qt.NewQWidget(nil)
+	refreshLayout := qt.NewQHBoxLayout(nil)
+	refreshLayout.AddWidget(d.guiRefreshSlider.QWidget)
+	refreshLayout.AddWidget(d.guiRefreshValueLbl.QWidget)
+	refreshRow.SetLayout(refreshLayout.QLayout)
+	advancedForm.AddRow3("Refresh interval:", refreshRow)
+
+	enableRefreshControls := func() {
+		enabled := d.limitGuiCh.IsChecked()
+		d.guiRefreshSlider.SetEnabled(enabled)
+		d.guiRefreshValueLbl.SetEnabled(enabled)
+	}
+	d.limitGuiCh.OnToggled(func(bool) { enableRefreshControls() })
+	enableRefreshControls()
 	advancedPage.SetLayout(advancedForm.QLayout)
 
 	// Add tabs (Cameras, Settings, Advanced)
@@ -371,8 +412,52 @@ func (d *SettingsDialog) onRemove() {
 func (d *SettingsDialog) onSave() {
 	// Persist the working copy to global config + YAML
 	configMu.Lock()
+	// Preserve runtime-updated fields that the dialog does not edit.
+	type preserved struct {
+		disabled bool
+		x, y     int
+		w, h     int
+	}
+	preservedByKey := make(map[string]preserved, len(globalConfig.Cameras))
+	for i := range globalConfig.Cameras {
+		c := globalConfig.Cameras[i]
+		key := c.ID
+		if key == "" {
+			if c.Name != "" {
+				key = c.Name
+			} else {
+				key = c.URL
+			}
+		}
+		preservedByKey[key] = preserved{
+			disabled: c.Disabled,
+			x:        c.X,
+			y:        c.Y,
+			w:        c.Width,
+			h:        c.Height,
+		}
+	}
+
 	globalConfig.Cameras = make([]CameraConfig, len(d.cams))
 	copy(globalConfig.Cameras, d.cams)
+	for i := range globalConfig.Cameras {
+		c := &globalConfig.Cameras[i]
+		key := c.ID
+		if key == "" {
+			if c.Name != "" {
+				key = c.Name
+			} else {
+				key = c.URL
+			}
+		}
+		if p, ok := preservedByKey[key]; ok {
+			c.Disabled = p.disabled
+			c.X = p.x
+			c.Y = p.y
+			c.Width = p.w
+			c.Height = p.h
+		}
+	}
 	globalConfig.NoWindowsTitles = d.noWinTitlesCh.IsChecked()
 	globalConfig.SnapEnabled = d.snapCh.IsChecked()
 	globalConfig.AlwaysOnTopAll = d.alwaysOnTopAllCh.IsChecked()
@@ -383,6 +468,9 @@ func (d *SettingsDialog) onSave() {
 	globalConfig.ShowBitrate = d.bitrateCh.IsChecked()
 	globalConfig.ShowDrops = d.dropsCh.IsChecked()
 	globalConfig.ShowCPUUsage = d.cpuCh.IsChecked()
+	globalConfig.LimitGuiRefresh = d.limitGuiCh.IsChecked()
+	globalConfig.GuiRefreshMs = d.guiRefreshSlider.Value()
+	globalConfig.RepaintOnNewFrame = d.repaintOnNewCh.IsChecked()
 	configMu.Unlock()
 
 	// Apply immediately to open windows (frameless ↔ titled)
@@ -410,6 +498,8 @@ func (d *SettingsDialog) onSave() {
 		}
 		// Re-polish to show changes right away
 		w.win.Show()
+
+		w.ApplyGuiRefreshSettings()
 	}
 
 	if err := SaveConfig(); err != nil {
