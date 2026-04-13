@@ -23,6 +23,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"github.com/mappu/miqt/qt"
 )
@@ -58,6 +60,26 @@ type SettingsDialog struct {
 	guiRefreshSlider   *qt.QSlider
 	guiRefreshValueLbl *qt.QLabel
 	repaintOnNewCh     *qt.QCheckBox
+	// supersync
+	superSyncEnabledCh    *qt.QCheckBox
+	superSyncBaseURLEd    *qt.QLineEdit
+	superSyncAppIDEd      *qt.QLineEdit
+	superSyncBucketIDEd   *qt.QLineEdit
+	superSyncUserIDEd     *qt.QLineEdit
+	superSyncDeviceIDEd   *qt.QLineEdit
+	superSyncProfileIDEd  *qt.QLineEdit
+	superSyncSigningKeyEd *qt.QLineEdit
+	superSyncPassphraseEd *qt.QLineEdit
+	superSyncPrivateCh    *qt.QCheckBox
+	superSyncSharedCh     *qt.QCheckBox
+	superSyncStartupCh    *qt.QCheckBox
+	superSyncSaveCh       *qt.QCheckBox
+	superSyncPullApplyCh  *qt.QCheckBox
+	superSyncRecipientsEd *qt.QTextEdit
+	superSyncStatusLbl    *qt.QLabel
+	superSyncAuthBtn      *qt.QPushButton
+	superSyncRunBtn       *qt.QPushButton
+	superSyncConflictBtn  *qt.QPushButton
 	// Cameras
 	cams []CameraConfig
 }
@@ -188,10 +210,140 @@ func newSettingsDialog(parent *qt.QWidget) *SettingsDialog {
 	enableRefreshControls()
 	advancedPage.SetLayout(advancedForm.QLayout)
 
-	// Add tabs (Cameras, Settings, Advanced)
+	// ===== SuperSync tab =====
+	superSyncPage := qt.NewQWidget(nil)
+	superSyncLayout := qt.NewQVBoxLayout(nil)
+
+	ss := globalConfig.SuperSync
+	d.superSyncEnabledCh = qt.NewQCheckBox4("Enable SuperSync integration", nil)
+	d.superSyncEnabledCh.SetChecked(ss.Enabled)
+	superSyncLayout.AddWidget(d.superSyncEnabledCh.QWidget)
+
+	connGroup := qt.NewQGroupBox3("Connection")
+	connForm := qt.NewQFormLayout(nil)
+	d.superSyncBaseURLEd = qt.NewQLineEdit(nil)
+	d.superSyncBaseURLEd.SetText(ss.BaseURL)
+	d.superSyncAppIDEd = qt.NewQLineEdit(nil)
+	d.superSyncAppIDEd.SetText(ss.AppID)
+	d.superSyncBucketIDEd = qt.NewQLineEdit(nil)
+	d.superSyncBucketIDEd.SetText(ss.BucketID)
+	d.superSyncUserIDEd = qt.NewQLineEdit(nil)
+	d.superSyncUserIDEd.SetText(ss.UserID)
+	d.superSyncDeviceIDEd = qt.NewQLineEdit(nil)
+	d.superSyncDeviceIDEd.SetText(ss.DeviceID)
+	d.superSyncProfileIDEd = qt.NewQLineEdit(nil)
+	d.superSyncProfileIDEd.SetText(ss.ProfileID)
+	connForm.AddRow3("Base URL:", d.superSyncBaseURLEd.QWidget)
+	connForm.AddRow3("App ID:", d.superSyncAppIDEd.QWidget)
+	connForm.AddRow3("Bucket ID:", d.superSyncBucketIDEd.QWidget)
+	connForm.AddRow3("User ID:", d.superSyncUserIDEd.QWidget)
+	connForm.AddRow3("Device ID:", d.superSyncDeviceIDEd.QWidget)
+	connForm.AddRow3("Profile ID:", d.superSyncProfileIDEd.QWidget)
+	connGroup.SetLayout(connForm.QLayout)
+	superSyncLayout.AddWidget(connGroup.QWidget)
+
+	authGroup := qt.NewQGroupBox3("Auth And Privacy")
+	authForm := qt.NewQFormLayout(nil)
+	d.superSyncSigningKeyEd = qt.NewQLineEdit(nil)
+	d.superSyncSigningKeyEd.SetText(ss.SigningKeyPath)
+	d.superSyncSigningKeyEd.SetPlaceholderText("Paste private key")
+	d.superSyncPassphraseEd = qt.NewQLineEdit(nil)
+	d.superSyncPassphraseEd.SetText(ss.EncryptionPassphrase)
+	d.superSyncPrivateCh = qt.NewQCheckBox4("Encrypt synced payloads on the client", nil)
+	d.superSyncPrivateCh.SetChecked(ss.PrivateProfile)
+	d.superSyncSharedCh = qt.NewQCheckBox4("Enable shared profile grants", nil)
+	d.superSyncSharedCh.SetChecked(ss.SharedProfile)
+	authForm.AddRow3("Private key:", d.superSyncSigningKeyEd.QWidget)
+	authForm.AddRow3("Encryption key:", d.superSyncPassphraseEd.QWidget)
+	authForm.AddRow3("", d.superSyncPrivateCh.QWidget)
+	authForm.AddRow3("", d.superSyncSharedCh.QWidget)
+	authGroup.SetLayout(authForm.QLayout)
+	superSyncLayout.AddWidget(authGroup.QWidget)
+
+	behaviorGroup := qt.NewQGroupBox3("Behavior")
+	behaviorForm := qt.NewQFormLayout(nil)
+	d.superSyncStartupCh = qt.NewQCheckBox4("Sync on application startup", nil)
+	d.superSyncStartupCh.SetChecked(ss.SyncOnStartup)
+	d.superSyncSaveCh = qt.NewQCheckBox4("Sync after saving settings", nil)
+	d.superSyncSaveCh.SetChecked(ss.SyncOnSave)
+	d.superSyncPullApplyCh = qt.NewQCheckBox4("Allow remote settings to overwrite local settings when local is clean", nil)
+	d.superSyncPullApplyCh.SetChecked(ss.AllowPullApply)
+	d.superSyncRecipientsEd = qt.NewQTextEdit(nil)
+	d.superSyncRecipientsEd.SetPlainText(strings.Join(ss.ShareRecipients, "\n"))
+	d.superSyncRecipientsEd.SetPlaceholderText("One recipient user ID per line")
+	d.superSyncRecipientsEd.SetMinimumHeight(72)
+	d.superSyncRecipientsEd.SetMaximumHeight(90)
+	behaviorForm.AddRow3("", d.superSyncStartupCh.QWidget)
+	behaviorForm.AddRow3("", d.superSyncSaveCh.QWidget)
+	behaviorForm.AddRow3("", d.superSyncPullApplyCh.QWidget)
+	behaviorForm.AddRow3("Share recipients:", d.superSyncRecipientsEd.QWidget)
+	behaviorGroup.SetLayout(behaviorForm.QLayout)
+	superSyncLayout.AddWidget(behaviorGroup.QWidget)
+
+	d.superSyncStatusLbl = qt.NewQLabel(nil)
+	d.refreshSuperSyncStatus(globalConfig.SuperSync)
+	superSyncLayout.AddWidget(d.superSyncStatusLbl.QWidget)
+
+	superSyncBtns := qt.NewQHBoxLayout(nil)
+	d.superSyncAuthBtn = qt.NewQPushButton5("Authenticate", nil)
+	d.superSyncRunBtn = qt.NewQPushButton5("Sync now", nil)
+	d.superSyncConflictBtn = qt.NewQPushButton5("Open conflict folder", nil)
+	superSyncBtns.AddWidget(d.superSyncAuthBtn.QWidget)
+	superSyncBtns.AddWidget(d.superSyncRunBtn.QWidget)
+	superSyncBtns.AddWidget(d.superSyncConflictBtn.QWidget)
+	superSyncBtns.AddStretch()
+	superSyncLayout.AddLayout(superSyncBtns.QLayout)
+	superSyncLayout.AddStretch()
+	superSyncPage.SetLayout(superSyncLayout.QLayout)
+
+	superSyncScroll := qt.NewQScrollArea(nil)
+	superSyncScroll.SetWidget(superSyncPage)
+	superSyncScroll.SetWidgetResizable(true)
+	superSyncScroll.SetFrameShape(qt.QFrame__NoFrame)
+
+	for _, w := range []*qt.QWidget{
+		d.superSyncBaseURLEd.QWidget,
+		d.superSyncAppIDEd.QWidget,
+		d.superSyncBucketIDEd.QWidget,
+		d.superSyncUserIDEd.QWidget,
+		d.superSyncDeviceIDEd.QWidget,
+		d.superSyncProfileIDEd.QWidget,
+		d.superSyncSigningKeyEd.QWidget,
+		d.superSyncPassphraseEd.QWidget,
+		d.superSyncRecipientsEd.QWidget,
+	} {
+		w.SetMinimumWidth(420)
+	}
+
+	updateSuperSyncControls := func() {
+		enabled := d.superSyncEnabledCh.IsChecked()
+		d.superSyncBaseURLEd.SetEnabled(enabled)
+		d.superSyncAppIDEd.SetEnabled(enabled)
+		d.superSyncBucketIDEd.SetEnabled(enabled)
+		d.superSyncUserIDEd.SetEnabled(enabled)
+		d.superSyncDeviceIDEd.SetEnabled(enabled)
+		d.superSyncProfileIDEd.SetEnabled(enabled)
+		d.superSyncSigningKeyEd.SetEnabled(enabled)
+		d.superSyncPassphraseEd.SetEnabled(enabled)
+		d.superSyncPrivateCh.SetEnabled(enabled)
+		d.superSyncSharedCh.SetEnabled(enabled)
+		d.superSyncStartupCh.SetEnabled(enabled)
+		d.superSyncSaveCh.SetEnabled(enabled)
+		d.superSyncPullApplyCh.SetEnabled(enabled)
+		d.superSyncRecipientsEd.SetEnabled(enabled && d.superSyncSharedCh.IsChecked())
+		d.superSyncAuthBtn.SetEnabled(enabled)
+		d.superSyncRunBtn.SetEnabled(enabled)
+		d.superSyncConflictBtn.SetEnabled(enabled)
+	}
+	d.superSyncEnabledCh.OnToggled(func(bool) { updateSuperSyncControls() })
+	d.superSyncSharedCh.OnToggled(func(bool) { updateSuperSyncControls() })
+	updateSuperSyncControls()
+
+	// Add tabs (Cameras, Settings, Advanced, SuperSync)
 	_ = d.tabs.AddTab(d.camPage, "Cameras")
 	_ = d.tabs.AddTab(settingsPage, "Settings")
 	_ = d.tabs.AddTab(advancedPage, "Advanced")
+	_ = d.tabs.AddTab(superSyncScroll.QWidget, "SuperSync")
 
 	// ===== Footer (Save / Cancel) =====
 	d.btnSave = qt.NewQPushButton5("Save", nil)
@@ -216,6 +368,9 @@ func newSettingsDialog(parent *qt.QWidget) *SettingsDialog {
 	d.btnRemove.OnClicked(func() { d.onRemove() })
 	d.btnSave.OnClicked(func() { d.onSave() })
 	d.btnCancel.OnClicked(func() { d.dlg.Reject() })
+	d.superSyncAuthBtn.OnClicked(func() { d.onSuperSyncAuthenticate() })
+	d.superSyncRunBtn.OnClicked(func() { d.onSuperSyncSyncNow() })
+	d.superSyncConflictBtn.OnClicked(func() { openFileOrDir(superSyncConflictDir()) })
 
 	// Enable/disable edit/remove based on selection
 	updateButtons := func() {
@@ -229,7 +384,7 @@ func newSettingsDialog(parent *qt.QWidget) *SettingsDialog {
 	// Double-click to edit
 	d.list.OnItemDoubleClicked(func(*qt.QListWidgetItem) { d.onEdit() })
 
-	d.dlg.Resize(560, 420)
+	d.dlg.Resize(640, 520)
 	d.dlg.Show()
 	d.dlg.Raise()
 	d.dlg.ActivateWindow()
@@ -409,18 +564,20 @@ func (d *SettingsDialog) onRemove() {
 
 }
 
-func (d *SettingsDialog) onSave() {
-	// Persist the working copy to global config + YAML
+func (d *SettingsDialog) collectConfig() AppConfig {
 	configMu.Lock()
+	cfg := globalConfig
+	configMu.Unlock()
+
 	// Preserve runtime-updated fields that the dialog does not edit.
 	type preserved struct {
 		disabled bool
 		x, y     int
 		w, h     int
 	}
-	preservedByKey := make(map[string]preserved, len(globalConfig.Cameras))
-	for i := range globalConfig.Cameras {
-		c := globalConfig.Cameras[i]
+	preservedByKey := make(map[string]preserved, len(cfg.Cameras))
+	for i := range cfg.Cameras {
+		c := cfg.Cameras[i]
 		key := c.ID
 		if key == "" {
 			if c.Name != "" {
@@ -438,10 +595,10 @@ func (d *SettingsDialog) onSave() {
 		}
 	}
 
-	globalConfig.Cameras = make([]CameraConfig, len(d.cams))
-	copy(globalConfig.Cameras, d.cams)
-	for i := range globalConfig.Cameras {
-		c := &globalConfig.Cameras[i]
+	cfg.Cameras = make([]CameraConfig, len(d.cams))
+	copy(cfg.Cameras, d.cams)
+	for i := range cfg.Cameras {
+		c := &cfg.Cameras[i]
 		key := c.ID
 		if key == "" {
 			if c.Name != "" {
@@ -458,19 +615,128 @@ func (d *SettingsDialog) onSave() {
 			c.Height = p.h
 		}
 	}
-	globalConfig.NoWindowsTitles = d.noWinTitlesCh.IsChecked()
-	globalConfig.SnapEnabled = d.snapCh.IsChecked()
-	globalConfig.AlwaysOnTopAll = d.alwaysOnTopAllCh.IsChecked()
-	globalConfig.ActiveOnTray = d.activateOnTrayCh.IsChecked()
-	globalConfig.ActiveOnWin = d.activateOnWinCh.IsChecked()
-	globalConfig.HealthChip = d.healthChipCh.IsChecked()
-	globalConfig.ShowFPS = d.fpsCh.IsChecked()
-	globalConfig.ShowBitrate = d.bitrateCh.IsChecked()
-	globalConfig.ShowDrops = d.dropsCh.IsChecked()
-	globalConfig.ShowCPUUsage = d.cpuCh.IsChecked()
-	globalConfig.LimitGuiRefresh = d.limitGuiCh.IsChecked()
-	globalConfig.GuiRefreshMs = d.guiRefreshSlider.Value()
-	globalConfig.RepaintOnNewFrame = d.repaintOnNewCh.IsChecked()
+
+	cfg.NoWindowsTitles = d.noWinTitlesCh.IsChecked()
+	cfg.SnapEnabled = d.snapCh.IsChecked()
+	cfg.AlwaysOnTopAll = d.alwaysOnTopAllCh.IsChecked()
+	cfg.ActiveOnTray = d.activateOnTrayCh.IsChecked()
+	cfg.ActiveOnWin = d.activateOnWinCh.IsChecked()
+	cfg.HealthChip = d.healthChipCh.IsChecked()
+	cfg.ShowFPS = d.fpsCh.IsChecked()
+	cfg.ShowBitrate = d.bitrateCh.IsChecked()
+	cfg.ShowDrops = d.dropsCh.IsChecked()
+	cfg.ShowCPUUsage = d.cpuCh.IsChecked()
+	cfg.LimitGuiRefresh = d.limitGuiCh.IsChecked()
+	cfg.GuiRefreshMs = d.guiRefreshSlider.Value()
+	cfg.RepaintOnNewFrame = d.repaintOnNewCh.IsChecked()
+
+	cfg.SuperSync.Enabled = d.superSyncEnabledCh.IsChecked()
+	cfg.SuperSync.BaseURL = strings.TrimSpace(d.superSyncBaseURLEd.Text())
+	cfg.SuperSync.AppID = strings.TrimSpace(d.superSyncAppIDEd.Text())
+	cfg.SuperSync.BucketID = strings.TrimSpace(d.superSyncBucketIDEd.Text())
+	cfg.SuperSync.UserID = strings.TrimSpace(d.superSyncUserIDEd.Text())
+	cfg.SuperSync.DeviceID = strings.TrimSpace(d.superSyncDeviceIDEd.Text())
+	cfg.SuperSync.ProfileID = strings.TrimSpace(d.superSyncProfileIDEd.Text())
+	cfg.SuperSync.SigningKeyPath = strings.TrimSpace(d.superSyncSigningKeyEd.Text())
+	cfg.SuperSync.EncryptionPassphrase = d.superSyncPassphraseEd.Text()
+	cfg.SuperSync.PrivateProfile = d.superSyncPrivateCh.IsChecked()
+	cfg.SuperSync.SharedProfile = d.superSyncSharedCh.IsChecked()
+	cfg.SuperSync.SyncOnStartup = d.superSyncStartupCh.IsChecked()
+	cfg.SuperSync.SyncOnSave = d.superSyncSaveCh.IsChecked()
+	cfg.SuperSync.AllowPullApply = d.superSyncPullApplyCh.IsChecked()
+	cfg.SuperSync.ShareRecipients = parseRecipients(d.superSyncRecipientsEd.ToPlainText())
+	ensureSuperSyncDefaults(&cfg)
+	return cfg
+}
+
+func parseRecipients(text string) []string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	seen := map[string]struct{}{}
+	for _, line := range lines {
+		v := strings.TrimSpace(line)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+func (d *SettingsDialog) refreshSuperSyncStatus(ss SuperSyncConfig) {
+	lines := []string{}
+	if ss.LastSyncStatus != "" {
+		lines = append(lines, "Status: "+ss.LastSyncStatus)
+	}
+	if !ss.LastSyncAt.IsZero() {
+		lines = append(lines, "Last sync: "+ss.LastSyncAt.Local().Format(time.RFC3339))
+	}
+	if ss.LastError != "" {
+		lines = append(lines, "Last error: "+ss.LastError)
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "Status: idle")
+	}
+	lines = append(lines, "Metadata: "+superSyncMetadataPath())
+	lines = append(lines, "Conflicts: "+superSyncConflictDir())
+	d.superSyncStatusLbl.SetText(strings.Join(lines, "\n"))
+}
+
+func (d *SettingsDialog) onSuperSyncAuthenticate() {
+	cfg := d.collectConfig()
+	if err := superSync.ensureDiscovery(cfg, &superSyncMetadata{}); err != nil {
+		log.Printf("supersync authenticate: discovery failed: %v", err)
+		qt.QMessageBox_Critical(nil, "SuperSync", "Discovery failed. Check terminal/debug log for details.")
+		return
+	}
+	meta, err := loadSuperSyncMetadata()
+	if err != nil {
+		log.Printf("supersync authenticate: metadata load failed: %v", err)
+		qt.QMessageBox_Critical(nil, "SuperSync", "Failed to load local SuperSync metadata. Check terminal/debug log for details.")
+		return
+	}
+	meta.BucketID = cfg.SuperSync.BucketID
+	meta.UserID = cfg.SuperSync.UserID
+	meta.DeviceID = cfg.SuperSync.DeviceID
+	if err := superSync.ensureAccessToken(cfg, meta); err != nil {
+		log.Printf("supersync authenticate: auth failed: %v", err)
+		qt.QMessageBox_Critical(nil, "SuperSync", "Authentication failed. Check terminal/debug log for details.")
+		return
+	}
+	configMu.Lock()
+	globalConfig.SuperSync.LastSyncStatus = "auth_ok"
+	globalConfig.SuperSync.LastError = ""
+	globalConfig.SuperSync.LastSyncAt = time.Now().UTC()
+	ss := globalConfig.SuperSync
+	configMu.Unlock()
+	_ = SaveConfig()
+	d.refreshSuperSyncStatus(ss)
+	qt.QMessageBox_Information(nil, "SuperSync", "Authentication succeeded.")
+}
+
+func (d *SettingsDialog) onSuperSyncSyncNow() {
+	cfg := d.collectConfig()
+	if err := superSync.SyncConfig(cfg, "settings-dialog-manual"); err != nil {
+		log.Printf("supersync manual sync failed: %v", err)
+		qt.QMessageBox_Critical(nil, "SuperSync", "Sync failed. Check terminal/debug log for details.")
+	} else {
+		qt.QMessageBox_Information(nil, "SuperSync", "Sync completed.")
+	}
+	configMu.Lock()
+	ss := globalConfig.SuperSync
+	configMu.Unlock()
+	d.refreshSuperSyncStatus(ss)
+}
+
+func (d *SettingsDialog) onSave() {
+	// Persist the working copy to global config + YAML
+	cfg := d.collectConfig()
+	configMu.Lock()
+	globalConfig = cfg
 	configMu.Unlock()
 
 	// Apply immediately to open windows (frameless ↔ titled)
@@ -511,6 +777,18 @@ func (d *SettingsDialog) onSave() {
 		mb.SetStandardButtons(qt.QMessageBox__Ok)
 		mb.Exec()
 		return
+	}
+
+	if cfg.SuperSync.Enabled && cfg.SuperSync.SyncOnSave {
+		if err := superSync.SyncConfig(cfg, "settings-save"); err != nil {
+			log.Printf("supersync save sync failed: %v", err)
+			mb := qt.NewQMessageBox(d.dlg.QWidget)
+			mb.SetWindowTitle("SuperSync")
+			mb.SetIcon(qt.QMessageBox__Warning)
+			mb.SetText("Settings were saved locally, but SuperSync sync failed. Check terminal/debug log for details.")
+			mb.SetStandardButtons(qt.QMessageBox__Ok)
+			mb.Exec()
+		}
 	}
 
 	d.dlg.Accept()

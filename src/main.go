@@ -111,6 +111,16 @@ func main() {
 
 	globalConfig = cfg
 	ensureCameraIDs(globalConfig.Cameras) // ensure that the cameras have identification numbers
+	ensureSuperSyncDefaults(&globalConfig)
+
+	if globalConfig.SuperSync.Enabled && globalConfig.SuperSync.SyncOnStartup {
+		if err := superSync.SyncCurrentConfig("startup"); err != nil {
+			log.Printf("supersync startup sync failed: %v", err)
+		}
+		configMu.Lock()
+		cfg = globalConfig
+		configMu.Unlock()
+	}
 
 	wins = make([]*CamWindow, len(globalConfig.Cameras))
 
