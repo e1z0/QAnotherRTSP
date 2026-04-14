@@ -115,6 +115,26 @@ type CameraConfig struct {
 	HwAccel   string `yaml:"hwaccel,omitempty"`    // "none","videotoolbox","vaapi","nvdec" (not wired here)
 }
 
+func cloneAppConfig(cfg AppConfig) AppConfig {
+	out := cfg
+	if cfg.Cameras != nil {
+		out.Cameras = append([]CameraConfig(nil), cfg.Cameras...)
+	}
+	if cfg.SuperSync.ShareRecipients != nil {
+		out.SuperSync.ShareRecipients = append([]string(nil), cfg.SuperSync.ShareRecipients...)
+	}
+	if cfg.Formations != nil {
+		out.Formations = make([]Formation, len(cfg.Formations))
+		for i := range cfg.Formations {
+			out.Formations[i] = cfg.Formations[i]
+			if cfg.Formations[i].Items != nil {
+				out.Formations[i].Items = append([]FormationItem(nil), cfg.Formations[i].Items...)
+			}
+		}
+	}
+	return out
+}
+
 func initlog() {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -187,12 +207,15 @@ func GetOS() string {
 }
 
 // ensure IDs exist
-func ensureCameraIDs(cs []CameraConfig) {
+func ensureCameraIDs(cs []CameraConfig) bool {
+	changed := false
 	for i := range cs {
 		if cs[i].ID == "" {
 			cs[i].ID = genID()
+			changed = true
 		}
 	}
+	return changed
 }
 
 // UpdateCameraGeometry updates a camera's saved X/Y/Width/Height and persists the YAML.
@@ -206,9 +229,18 @@ func UpdateCameraGeometry(key string, x, y, w, h int) error {
 	idx := -1
 	for i := range globalConfig.Cameras {
 		c := &globalConfig.Cameras[i]
-		if (c.ID != "" && c.ID == key) || (c.ID == "" && c.Name == key) || (key == c.URL) {
+		if c.ID != "" && c.ID == key {
 			idx = i
 			break
+		}
+	}
+	if idx < 0 {
+		for i := range globalConfig.Cameras {
+			c := &globalConfig.Cameras[i]
+			if c.Name == key || c.URL == key {
+				idx = i
+				break
+			}
 		}
 	}
 	if idx >= 0 {
@@ -217,6 +249,8 @@ func UpdateCameraGeometry(key string, x, y, w, h int) error {
 		c.Y = y
 		c.Width = w
 		c.Height = h
+	} else {
+		log.Printf("UpdateCameraGeometry: camera not found for key=%q", key)
 	}
 
 	// atomic write: write to tmp then rename

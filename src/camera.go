@@ -113,6 +113,29 @@ func (w *CamWindow) SetOnClosed(fn func(int)) { w.onClosed = fn }
 // Called by tray before Close()
 func (w *CamWindow) SuppressOnClosedOnce() { w.suppressOnClosed = true }
 
+func (w *CamWindow) ScheduleGeometrySave() {
+	if w == nil || w.win == nil || w.saveTimer == nil || w.closing {
+		return
+	}
+	if w.isFullscreen || w.suppressSave || w.win.IsFullScreen() || w.win.IsMaximized() {
+		return
+	}
+	w.saveTimer.Stop()
+	w.saveTimer.Start2()
+}
+
+func (w *CamWindow) PersistGeometryNow() {
+	if w == nil || w.win == nil {
+		return
+	}
+	if w.isFullscreen || w.suppressSave || w.win.IsFullScreen() || w.win.IsMaximized() {
+		return
+	}
+	if err := UpdateCameraGeometry(w.idKey, w.win.Pos().X(), w.win.Pos().Y(), w.win.Size().Width(), w.win.Size().Height()); err != nil {
+		log.Printf("save geometry failed: %v", err)
+	}
+}
+
 // newCamWindow creates the Qt window + videowidget and starts the decoder loop.
 func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 	w := &CamWindow{
@@ -126,7 +149,10 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 
 	w.idKey = cfg.ID
 	if w.idKey == "" {
-		w.idKey = genID()
+		w.idKey = cfg.Name
+		if w.idKey == "" {
+			w.idKey = cfg.URL
+		}
 	}
 
 	title := cfg.Name
@@ -162,16 +188,15 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 	}
 
 	win.Resize(width, height)
-	if cfg.X > 0 && cfg.Y > 0 {
-		win.Move(cfg.X, cfg.Y)
-	} else {
-		win.Move(0, 0)
-	}
+	win.Move(cfg.X, cfg.Y)
 	if cfg.AlwaysOnTop {
 		win.SetWindowFlag2(qt.WindowStaysOnTopHint, true)
 	}
 
 	win.OnCloseEvent(func(super func(event *qt.QCloseEvent), event *qt.QCloseEvent) {
+		if !w.closing {
+			w.PersistGeometryNow()
+		}
 		super(event)
 		if w.closing {
 			return
@@ -195,18 +220,7 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 	w.saveTimer.SetSingleShot(true)
 	w.saveTimer.SetInterval(600) // ms; tweak as you like
 	w.saveTimer.OnTimeout(func() {
-		if w == nil || w.win == nil || w.closing {
-			return
-		}
-		// ---- skip persisting if window looks fullscreen-ish ----
-		if looksFullscreenish(w.win) {
-			// don’t write this transient geometry
-			return
-		}
-		// Persist to config.yml
-		if err := UpdateCameraGeometry(w.idKey, w.win.Pos().X(), w.win.Pos().Y(), w.win.Size().Width(), w.win.Size().Height()); err != nil {
-			log.Printf("save geometry failed: %v", err)
-		}
+		w.PersistGeometryNow()
 	})
 
 	view := NewVideoWidget(&w.buf, nil, cfg.Stretch)
@@ -257,8 +271,7 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 			return
 		}
 		log.Printf("[%s] window moved to %dx%d", w.cfg.Name, event.Pos().X(), event.Pos().Y())
-		w.saveTimer.Stop()
-		w.saveTimer.Start2()
+		w.ScheduleGeometrySave()
 	})
 
 	win.OnResizeEvent(func(super func(event *qt.QResizeEvent), event *qt.QResizeEvent) {
@@ -267,8 +280,7 @@ func newCamWindow(cfg CameraConfig, idx int) (*CamWindow, error) {
 
 			return
 		}
-		w.saveTimer.Stop()
-		w.saveTimer.Start2()
+		w.ScheduleGeometrySave()
 	})
 
 	// Allow SPACE to toggle recording when this window has focus
@@ -425,6 +437,7 @@ func (w *CamWindow) Close() {
 	if w == nil {
 		return
 	}
+	w.PersistGeometryNow()
 
 	// Make sure we stop recording first
 	//if w.IsRecording() {
@@ -655,41 +668,6 @@ func (w *CamWindow) restartDecoder(reason string) {
 
 func (w *CamWindow) MetricsSnapshot() (fps, kbps, drops, cpu float64, health int) {
 	return w.fps, w.bitrateKbps, w.dropsPct, w.cpuPct, int(atomic.LoadInt32(&w.health))
-}
-
-func looksFullscreenish(win *qt.QMainWindow) bool {
-	if win == nil {
-		return false
-	}
-	if win.IsFullScreen() || win.IsMaximized() {
-		return true
-	}
-	// Compare against the current screen’s *available* geometry
-	scr := win.Screen()
-	if scr == nil {
-		scr = qt.QGuiApplication_PrimaryScreen()
-	}
-	if scr == nil {
-		return false
-	}
-	sg := scr.AvailableGeometry() // excludes taskbar/dock
-	wg := win.Geometry()
-
-	// consider it fullscreen-ish if it occupies (≈) the whole screen
-	const tol = 8 // px tolerance
-	samePos := abs(wg.X()-sg.X()) <= tol && abs(wg.Y()-sg.Y()) <= tol
-	sameW := abs(wg.Width()-sg.Width()) <= tol
-	sameH := abs(wg.Height()-sg.Height()) <= tol
-	if samePos && sameW && sameH {
-		return true
-	}
-
-	// also treat >95% of each dimension as fullscreen-ish (frameless edge cases)
-	if wg.Width() >= int(float64(sg.Width())*0.95) &&
-		wg.Height() >= int(float64(sg.Height())*0.95) {
-		return true
-	}
-	return false
 }
 
 // IsRecording reports whether this camera is currently recording.

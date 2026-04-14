@@ -23,9 +23,12 @@ import (
 	"time"
 
 	supersyncsdk "github.com/e1z0/qanotherrtsp/supersync/sdk/go"
+	"github.com/mappu/miqt/qt"
 )
 
 var superSync = newSuperSyncManager()
+
+const superSyncPollInterval = 15 * time.Second
 
 type superSyncManager struct {
 	mu sync.Mutex
@@ -67,7 +70,7 @@ func newSuperSyncManager() *superSyncManager {
 
 func (m *superSyncManager) SyncCurrentConfig(reason string) error {
 	configMu.Lock()
-	cfg := globalConfig
+	cfg := cloneAppConfig(globalConfig)
 	configMu.Unlock()
 	return m.SyncConfig(cfg, reason)
 }
@@ -76,6 +79,24 @@ func (m *superSyncManager) SyncCurrentConfigAsync(reason string) {
 	go func() {
 		if err := m.SyncCurrentConfig(reason); err != nil {
 			log.Printf("supersync async sync failed: %v", err)
+		}
+	}()
+}
+
+func (m *superSyncManager) StartPolling() {
+	go func() {
+		ticker := time.NewTicker(superSyncPollInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			configMu.Lock()
+			enabled := globalConfig.SuperSync.Enabled
+			configMu.Unlock()
+			if !enabled || appQuitting.Load() {
+				continue
+			}
+			if err := m.SyncCurrentConfig("poll"); err != nil {
+				log.Printf("supersync poll failed: %v", err)
+			}
 		}
 	}()
 }
@@ -114,6 +135,7 @@ func (m *superSyncManager) SyncConfig(cfg AppConfig, reason string) error {
 		profileID = "default"
 	}
 	pmeta := meta.profile(profileID)
+	firstSync := pmeta.LastSyncedVersion == 0 && pmeta.LastSyncedSHA256 == "" && pmeta.ItemID == ""
 
 	payload, digest, err := marshalCanonicalSyncPayload(cfg)
 	if err != nil {
@@ -147,13 +169,18 @@ func (m *superSyncManager) SyncConfig(cfg AppConfig, reason string) error {
 		m.updateStatus("sync_failure", time.Time{}, err.Error())
 		return err
 	}
+	if err := refreshLiveSyncInputs(reason, &cfg, &payload, &digest, &pmeta); err != nil {
+		m.updateStatus("sync_failure", time.Time{}, err.Error())
+		return err
+	}
+	localDirty = pmeta.LastSyncedSHA256 != digest
+	pmeta.Dirty = localDirty
+	meta.Profiles[profileID] = pmeta
+	if err := saveSuperSyncMetadata(meta); err != nil {
+		return err
+	}
 
 	if remoteItem == nil {
-		if !localDirty {
-			now := time.Now().UTC()
-			m.updateStatus("sync_success", now, "")
-			return nil
-		}
 		upload, err := pushSettingsPayload(client, cfg, payload, digest, "", 0)
 		if err != nil {
 			m.updateStatus("sync_failure", time.Time{}, err.Error())
@@ -169,6 +196,9 @@ func (m *superSyncManager) SyncConfig(cfg AppConfig, reason string) error {
 		if err := saveSuperSyncMetadata(meta); err != nil {
 			return err
 		}
+		if err := saveSuperSyncSnapshot(profileID, payload); err != nil {
+			log.Printf("supersync snapshot save failed: %v", err)
+		}
 		if err := reconcileShares(client, cfg, upload.Item.ID); err != nil {
 			m.updateStatus("sync_failure", time.Time{}, err.Error())
 			return err
@@ -183,8 +213,41 @@ func (m *superSyncManager) SyncConfig(cfg AppConfig, reason string) error {
 		m.updateStatus("sync_failure", time.Time{}, err.Error())
 		return err
 	}
+	if err := refreshLiveSyncInputs(reason, &cfg, &payload, &digest, &pmeta); err != nil {
+		m.updateStatus("sync_failure", time.Time{}, err.Error())
+		return err
+	}
+	localDirty = pmeta.LastSyncedSHA256 != digest
 
 	remoteChanged := remoteVersion != 0 && (remoteVersion != pmeta.LastSyncedVersion || remoteDigest != pmeta.LastSyncedSHA256)
+	if firstSync && remoteChanged {
+		if !cfg.SuperSync.AllowPullApply {
+			err := errors.New("remote settings exist but pull apply is disabled")
+			m.updateStatus("sync_failure", time.Time{}, err.Error())
+			return err
+		}
+		if err := applyDownloadedConfig(remotePayload, cfg); err != nil {
+			m.updateStatus("sync_failure", time.Time{}, err.Error())
+			return err
+		}
+		pmeta.ItemID = remoteItem.ID
+		pmeta.LastSyncedVersion = remoteVersion
+		pmeta.LastSyncedSHA256 = remoteDigest
+		pmeta.LastSyncAt = time.Now().UTC()
+		pmeta.Dirty = false
+		pmeta.Conflicted = false
+		meta.Profiles[profileID] = pmeta
+		if err := saveSuperSyncMetadata(meta); err != nil {
+			return err
+		}
+		if err := saveSuperSyncSnapshot(profileID, remotePayload); err != nil {
+			log.Printf("supersync snapshot save failed: %v", err)
+		}
+		m.updateStatus("pull_applied", pmeta.LastSyncAt, "")
+		log.Printf("supersync event=bootstrap_pull_applied profile=%s size=%d", profileID, len(remotePayload))
+		return nil
+	}
+
 	if !localDirty && remoteChanged {
 		if !cfg.SuperSync.AllowPullApply {
 			err := errors.New("remote settings changed but pull apply is disabled")
@@ -205,13 +268,90 @@ func (m *superSyncManager) SyncConfig(cfg AppConfig, reason string) error {
 		if err := saveSuperSyncMetadata(meta); err != nil {
 			return err
 		}
+		if err := saveSuperSyncSnapshot(profileID, remotePayload); err != nil {
+			log.Printf("supersync snapshot save failed: %v", err)
+		}
 		m.updateStatus("pull_applied", pmeta.LastSyncAt, "")
 		log.Printf("supersync event=pull_applied profile=%s size=%d", profileID, len(remotePayload))
+		return nil
+	}
+	if !localDirty && !remoteChanged {
+		now := time.Now().UTC()
+		pmeta.ItemID = remoteItem.ID
+		pmeta.LastSyncedVersion = remoteVersion
+		pmeta.LastSyncedSHA256 = remoteDigest
+		pmeta.LastSyncAt = now
+		pmeta.Dirty = false
+		pmeta.Conflicted = false
+		meta.Profiles[profileID] = pmeta
+		if err := saveSuperSyncMetadata(meta); err != nil {
+			return err
+		}
+		if err := saveSuperSyncSnapshot(profileID, remotePayload); err != nil {
+			log.Printf("supersync snapshot save failed: %v", err)
+		}
+		m.updateStatus("up_to_date", now, "")
+		log.Printf("supersync event=up_to_date profile=%s", profileID)
 		return nil
 	}
 
 	if localDirty {
 		if remoteChanged {
+			basePayload, _ := loadSuperSyncSnapshot(profileID)
+			preferRemote := reason == "poll" || reason == "startup"
+			mergedPayload, resolution, mergeErr := autoResolveSettingsConflict(basePayload, payload, remotePayload, preferRemote)
+			if mergeErr == nil {
+				mergedDigest := sha256Hex(mergedPayload)
+				if bytesEqual(mergedPayload, remotePayload) {
+					if err := applyDownloadedConfig(remotePayload, cfg); err != nil {
+						m.updateStatus("sync_failure", time.Time{}, err.Error())
+						return err
+					}
+					pmeta.ItemID = remoteItem.ID
+					pmeta.LastSyncedVersion = remoteVersion
+					pmeta.LastSyncedSHA256 = remoteDigest
+					pmeta.LastSyncAt = time.Now().UTC()
+					pmeta.Dirty = false
+					pmeta.Conflicted = false
+					meta.Profiles[profileID] = pmeta
+					if err := saveSuperSyncMetadata(meta); err != nil {
+						return err
+					}
+					if err := saveSuperSyncSnapshot(profileID, remotePayload); err != nil {
+						log.Printf("supersync snapshot save failed: %v", err)
+					}
+					m.updateStatus("pull_applied", pmeta.LastSyncAt, "")
+					log.Printf("supersync event=conflict_auto_resolved profile=%s resolution=%s action=pull", profileID, resolution)
+					return nil
+				}
+
+				upload, err := pushSettingsPayload(client, cfg, mergedPayload, mergedDigest, remoteItem.ID, remoteVersion)
+				if err == nil {
+					if err := applyDownloadedConfig(mergedPayload, cfg); err != nil {
+						m.updateStatus("sync_failure", time.Time{}, err.Error())
+						return err
+					}
+					pmeta.ItemID = upload.Item.ID
+					pmeta.LastSyncedVersion = upload.Version.Version
+					pmeta.LastSyncedSHA256 = mergedDigest
+					pmeta.LastSyncAt = time.Now().UTC()
+					pmeta.Dirty = false
+					pmeta.Conflicted = false
+					meta.Profiles[profileID] = pmeta
+					if err := saveSuperSyncMetadata(meta); err != nil {
+						return err
+					}
+					if err := saveSuperSyncSnapshot(profileID, mergedPayload); err != nil {
+						log.Printf("supersync snapshot save failed: %v", err)
+					}
+					m.updateStatus("push_applied", pmeta.LastSyncAt, "")
+					log.Printf("supersync event=conflict_auto_resolved profile=%s resolution=%s action=push", profileID, resolution)
+					return nil
+				}
+				log.Printf("supersync auto-merge push failed: %v", err)
+			} else {
+				log.Printf("supersync auto-merge failed: %v", mergeErr)
+			}
 			if err := persistConflictArtifacts(payload, remotePayload); err != nil {
 				m.updateStatus("sync_failure", time.Time{}, err.Error())
 				return err
@@ -243,6 +383,9 @@ func (m *superSyncManager) SyncConfig(cfg AppConfig, reason string) error {
 		if err := saveSuperSyncMetadata(meta); err != nil {
 			return err
 		}
+		if err := saveSuperSyncSnapshot(profileID, payload); err != nil {
+			log.Printf("supersync snapshot save failed: %v", err)
+		}
 		if err := reconcileShares(client, cfg, upload.Item.ID); err != nil {
 			m.updateStatus("sync_failure", time.Time{}, err.Error())
 			return err
@@ -252,6 +395,18 @@ func (m *superSyncManager) SyncConfig(cfg AppConfig, reason string) error {
 	}
 
 	return nil
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *superSyncManager) updateStatus(state string, at time.Time, errText string) {
@@ -518,6 +673,14 @@ func superSyncQuarantineDir() string {
 	return filepath.Join(env.configDir, "supersync-quarantine")
 }
 
+func superSyncSnapshotDir() string {
+	return filepath.Join(env.configDir, "supersync-snapshots")
+}
+
+func superSyncSnapshotPath(profileID string) string {
+	return filepath.Join(superSyncSnapshotDir(), sanitizeFSComponent(profileID)+".json")
+}
+
 func superSyncItemKey(profileID string) string {
 	if profileID == "" || profileID == "default" {
 		return "settings/default"
@@ -526,8 +689,17 @@ func superSyncItemKey(profileID string) string {
 }
 
 func marshalCanonicalSyncPayload(cfg AppConfig) ([]byte, string, error) {
-	syncCfg := cfg
-	ensureCameraIDs(syncCfg.Cameras)
+	syncCfg := cloneAppConfig(cfg)
+	_ = ensureCameraIDs(syncCfg.Cameras)
+	for i := range syncCfg.Cameras {
+		syncCfg.Cameras[i].X = 0
+		syncCfg.Cameras[i].Y = 0
+		syncCfg.Cameras[i].Width = 0
+		syncCfg.Cameras[i].Height = 0
+	}
+	// Screen-specific saved layouts stay local to each device.
+	syncCfg.Formations = nil
+	syncCfg.LastFormation = ""
 	slices.Sort(syncCfg.SuperSync.ShareRecipients)
 	syncCfg.SuperSync.DeviceID = ""
 	syncCfg.SuperSync.SigningKeyPath = ""
@@ -543,6 +715,10 @@ func marshalCanonicalSyncPayload(cfg AppConfig) ([]byte, string, error) {
 }
 
 func applyDownloadedConfig(payload []byte, local AppConfig) error {
+	configMu.Lock()
+	liveLocal := cloneAppConfig(globalConfig)
+	configMu.Unlock()
+
 	var remoteCfg AppConfig
 	if err := json.Unmarshal(payload, &remoteCfg); err != nil {
 		if err := quarantinePayload(payload); err != nil {
@@ -553,16 +729,252 @@ func applyDownloadedConfig(payload []byte, local AppConfig) error {
 	remoteCfg.SuperSync.DeviceID = local.SuperSync.DeviceID
 	remoteCfg.SuperSync.SigningKeyPath = local.SuperSync.SigningKeyPath
 	remoteCfg.SuperSync.EncryptionPassphrase = local.SuperSync.EncryptionPassphrase
-	remoteCfg.SuperSync.LastSyncStatus = local.SuperSync.LastSyncStatus
-	remoteCfg.SuperSync.LastSyncAt = local.SuperSync.LastSyncAt
-	remoteCfg.SuperSync.LastError = local.SuperSync.LastError
+	remoteCfg.SuperSync.LastSyncStatus = liveLocal.SuperSync.LastSyncStatus
+	remoteCfg.SuperSync.LastSyncAt = liveLocal.SuperSync.LastSyncAt
+	remoteCfg.SuperSync.LastError = liveLocal.SuperSync.LastError
+	remoteCfg.Formations = liveLocal.Formations
+	remoteCfg.LastFormation = liveLocal.LastFormation
+	preserveLocalCameraGeometry(&remoteCfg, liveLocal)
 	ensureSuperSyncDefaults(&remoteCfg)
-	ensureCameraIDs(remoteCfg.Cameras)
+	_ = ensureCameraIDs(remoteCfg.Cameras)
 
 	configMu.Lock()
 	globalConfig = remoteCfg
 	configMu.Unlock()
-	return SaveConfig()
+	if err := SaveConfig(); err != nil {
+		return err
+	}
+	if tray == nil && len(wins) == 0 {
+		return nil
+	}
+	CallOnQtMain(func() {
+		applyRuntimeConfigUpdate(remoteCfg)
+	})
+	return nil
+}
+
+func applyRuntimeConfigUpdate(newCfg AppConfig) {
+	currentWins := wins
+	existingByID := make(map[string]*CamWindow, len(currentWins))
+	used := make(map[*CamWindow]bool, len(currentWins))
+	for _, w := range currentWins {
+		if w == nil {
+			continue
+		}
+		id := w.cfg.ID
+		if id == "" {
+			id = cameraRuntimeKey(w.cfg)
+		}
+		existingByID[id] = w
+	}
+
+	newWins := make([]*CamWindow, len(newCfg.Cameras))
+	for i := range newCfg.Cameras {
+		cam := newCfg.Cameras[i]
+		key := cameraRuntimeKey(cam)
+		if w, ok := existingByID[key]; ok && w != nil {
+			used[w] = true
+			w.idx = i
+			w.idKey = key
+			if cam.Disabled {
+				w.SuppressOnClosedOnce()
+				w.Close()
+				newWins[i] = nil
+				continue
+			}
+			newWins[i] = w
+			if !cameraSyncEquivalent(w.cfg, cam) {
+				go w.RestartWith(cam, "supersync-apply")
+			} else {
+				w.cfg = cam
+			}
+			continue
+		}
+		if cam.Disabled {
+			continue
+		}
+		w, err := newCamWindow(cam, i)
+		if err != nil {
+			log.Printf("supersync apply: open cam %q failed: %v", safeCamTitle(cam), err)
+			continue
+		}
+		newWins[i] = w
+	}
+
+	for _, w := range currentWins {
+		if w == nil || used[w] {
+			continue
+		}
+		w.SuppressOnClosedOnce()
+		w.Close()
+	}
+	wins = newWins
+
+	applyRuntimeWindowSettings()
+
+	if tray != nil {
+		tray.cfg = &globalConfig
+		tray.rebuild()
+		for i, w := range wins {
+			if w == nil {
+				continue
+			}
+			tray.AttachWindowHooks(i, w)
+		}
+	}
+}
+
+func applyRuntimeWindowSettings() {
+	for i, w := range wins {
+		if w == nil || w.win == nil {
+			continue
+		}
+		if i < len(globalConfig.Cameras) {
+			w.cfg = globalConfig.Cameras[i]
+		}
+		atop := globalConfig.AlwaysOnTopAll
+		if !atop && i < len(globalConfig.Cameras) {
+			atop = globalConfig.Cameras[i].AlwaysOnTop
+		}
+		w.win.SetWindowFlag2(qt.WindowStaysOnTopHint, atop)
+		w.win.SetWindowFlag2(qt.FramelessWindowHint, globalConfig.NoWindowsTitles)
+		if w.view != nil {
+			w.view.SetOverlayTitle(safeCamTitle(w.cfg), globalConfig.NoWindowsTitles)
+		}
+		if !globalConfig.NoWindowsTitles {
+			w.win.SetWindowTitle("Cam: " + safeCamTitle(w.cfg))
+		}
+		w.win.Show()
+		w.ApplyGuiRefreshSettings()
+	}
+}
+
+func cameraRuntimeKey(c CameraConfig) string {
+	if c.ID != "" {
+		return c.ID
+	}
+	if c.Name != "" {
+		return c.Name
+	}
+	return c.URL
+}
+
+func cameraSyncEquivalent(a, b CameraConfig) bool {
+	return a.ID == b.ID &&
+		a.Name == b.Name &&
+		a.Disabled == b.Disabled &&
+		a.URL == b.URL &&
+		a.RTSPTCP == b.RTSPTCP &&
+		a.Caching == b.Caching &&
+		a.AlwaysOnTop == b.AlwaysOnTop &&
+		a.Mute == b.Mute &&
+		a.Stretch == b.Stretch &&
+		a.FFmpegParams == b.FFmpegParams &&
+		intPtrEqual(a.Volume, b.Volume) &&
+		a.Probesize == b.Probesize &&
+		a.AnalyzeUS == b.AnalyzeUS &&
+		a.Threads == b.Threads &&
+		a.HwAccel == b.HwAccel
+}
+
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func preserveLocalCameraGeometry(dst *AppConfig, local AppConfig) {
+	if dst == nil {
+		return
+	}
+	type geom struct {
+		x, y int
+		w, h int
+	}
+	byKey := make(map[string]geom, len(local.Cameras))
+	for i := range local.Cameras {
+		c := local.Cameras[i]
+		key := c.ID
+		if key == "" {
+			if c.Name != "" {
+				key = c.Name
+			} else {
+				key = c.URL
+			}
+		}
+		byKey[key] = geom{x: c.X, y: c.Y, w: c.Width, h: c.Height}
+	}
+	for i := range dst.Cameras {
+		c := &dst.Cameras[i]
+		key := c.ID
+		if key == "" {
+			if c.Name != "" {
+				key = c.Name
+			} else {
+				key = c.URL
+			}
+		}
+		if g, ok := byKey[key]; ok {
+			c.X = g.x
+			c.Y = g.y
+			c.Width = g.w
+			c.Height = g.h
+		}
+	}
+}
+
+func refreshLiveSyncInputs(reason string, cfg *AppConfig, payload *[]byte, digest *string, pmeta *superSyncProfileMeta) error {
+	if !syncReasonUsesLiveGlobalState(reason) {
+		return nil
+	}
+	liveCfg, livePayload, liveDigest, err := currentLiveSyncSnapshot()
+	if err != nil {
+		return err
+	}
+	if superSyncTargetChanged(*cfg, liveCfg) {
+		return errors.New("supersync configuration changed during sync; skipping stale result")
+	}
+	if liveDigest == *digest {
+		return nil
+	}
+	log.Printf("supersync event=local_state_changed_during_sync reason=%s", reason)
+	*cfg = liveCfg
+	*payload = livePayload
+	*digest = liveDigest
+	if pmeta != nil {
+		pmeta.Dirty = pmeta.LastSyncedSHA256 != liveDigest
+	}
+	return nil
+}
+
+func currentLiveSyncSnapshot() (AppConfig, []byte, string, error) {
+	configMu.Lock()
+	cfg := cloneAppConfig(globalConfig)
+	configMu.Unlock()
+	payload, digest, err := marshalCanonicalSyncPayload(cfg)
+	if err != nil {
+		return AppConfig{}, nil, "", err
+	}
+	return cfg, payload, digest, nil
+}
+
+func syncReasonUsesLiveGlobalState(reason string) bool {
+	switch reason {
+	case "poll", "startup", "settings-save":
+		return true
+	default:
+		return false
+	}
+}
+
+func superSyncTargetChanged(a, b AppConfig) bool {
+	return a.SuperSync.Enabled != b.SuperSync.Enabled ||
+		strings.TrimSpace(a.SuperSync.BaseURL) != strings.TrimSpace(b.SuperSync.BaseURL) ||
+		strings.TrimSpace(a.SuperSync.BucketID) != strings.TrimSpace(b.SuperSync.BucketID) ||
+		strings.TrimSpace(a.SuperSync.UserID) != strings.TrimSpace(b.SuperSync.UserID) ||
+		strings.TrimSpace(a.SuperSync.DeviceID) != strings.TrimSpace(b.SuperSync.DeviceID) ||
+		strings.TrimSpace(a.SuperSync.ProfileID) != strings.TrimSpace(b.SuperSync.ProfileID)
 }
 
 func persistConflictArtifacts(localPayload, remotePayload []byte) error {
@@ -576,6 +988,26 @@ func persistConflictArtifacts(localPayload, remotePayload []byte) error {
 		return err
 	}
 	return os.WriteFile(remotePath, remotePayload, 0600)
+}
+
+func loadSuperSyncSnapshot(profileID string) ([]byte, error) {
+	b, err := os.ReadFile(superSyncSnapshotPath(profileID))
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func saveSuperSyncSnapshot(profileID string, payload []byte) error {
+	if err := os.MkdirAll(superSyncSnapshotDir(), 0755); err != nil {
+		return err
+	}
+	path := superSyncSnapshotPath(profileID)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, payload, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func quarantinePayload(payload []byte) error {
@@ -753,4 +1185,227 @@ func parseTimeLoose(s string) time.Time {
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+func autoResolveSettingsConflict(basePayload, localPayload, remotePayload []byte, preferRemote bool) ([]byte, string, error) {
+	if len(basePayload) == 0 {
+		if preferRemote {
+			return remotePayload, "remote_wins_no_base", nil
+		}
+		return localPayload, "local_wins_no_base", nil
+	}
+	var baseCfg, localCfg, remoteCfg AppConfig
+	if err := json.Unmarshal(basePayload, &baseCfg); err != nil {
+		return nil, "", err
+	}
+	if err := json.Unmarshal(localPayload, &localCfg); err != nil {
+		return nil, "", err
+	}
+	if err := json.Unmarshal(remotePayload, &remoteCfg); err != nil {
+		return nil, "", err
+	}
+	merged := mergeAppConfig(baseCfg, localCfg, remoteCfg, preferRemote)
+	out, _, err := marshalCanonicalSyncPayload(merged)
+	if err != nil {
+		return nil, "", err
+	}
+	return out, "three_way_merge", nil
+}
+
+func mergeAppConfig(base, local, remote AppConfig, preferRemote bool) AppConfig {
+	merged := local
+	merged.NoWindowsTitles = chooseComparable(base.NoWindowsTitles, local.NoWindowsTitles, remote.NoWindowsTitles, preferRemote)
+	merged.SnapEnabled = chooseComparable(base.SnapEnabled, local.SnapEnabled, remote.SnapEnabled, preferRemote)
+	merged.AlwaysOnTopAll = chooseComparable(base.AlwaysOnTopAll, local.AlwaysOnTopAll, remote.AlwaysOnTopAll, preferRemote)
+	merged.ActiveOnTray = chooseComparable(base.ActiveOnTray, local.ActiveOnTray, remote.ActiveOnTray, preferRemote)
+	merged.ActiveOnWin = chooseComparable(base.ActiveOnWin, local.ActiveOnWin, remote.ActiveOnWin, preferRemote)
+	merged.LimitGuiRefresh = chooseComparable(base.LimitGuiRefresh, local.LimitGuiRefresh, remote.LimitGuiRefresh, preferRemote)
+	merged.GuiRefreshMs = chooseComparable(base.GuiRefreshMs, local.GuiRefreshMs, remote.GuiRefreshMs, preferRemote)
+	merged.RepaintOnNewFrame = chooseComparable(base.RepaintOnNewFrame, local.RepaintOnNewFrame, remote.RepaintOnNewFrame, preferRemote)
+	merged.HealthChip = chooseComparable(base.HealthChip, local.HealthChip, remote.HealthChip, preferRemote)
+	merged.ShowFPS = chooseComparable(base.ShowFPS, local.ShowFPS, remote.ShowFPS, preferRemote)
+	merged.ShowBitrate = chooseComparable(base.ShowBitrate, local.ShowBitrate, remote.ShowBitrate, preferRemote)
+	merged.ShowDrops = chooseComparable(base.ShowDrops, local.ShowDrops, remote.ShowDrops, preferRemote)
+	merged.ShowCPUUsage = chooseComparable(base.ShowCPUUsage, local.ShowCPUUsage, remote.ShowCPUUsage, preferRemote)
+	merged.SuperSync = mergeSuperSyncConfig(base.SuperSync, local.SuperSync, remote.SuperSync, preferRemote)
+	merged.Cameras = mergeCameraConfigs(base.Cameras, local.Cameras, remote.Cameras, preferRemote)
+	return merged
+}
+
+func mergeSuperSyncConfig(base, local, remote SuperSyncConfig, preferRemote bool) SuperSyncConfig {
+	merged := local
+	merged.Enabled = chooseComparable(base.Enabled, local.Enabled, remote.Enabled, preferRemote)
+	merged.BaseURL = chooseComparable(base.BaseURL, local.BaseURL, remote.BaseURL, preferRemote)
+	merged.AppID = chooseComparable(base.AppID, local.AppID, remote.AppID, preferRemote)
+	merged.BucketID = chooseComparable(base.BucketID, local.BucketID, remote.BucketID, preferRemote)
+	merged.UserID = chooseComparable(base.UserID, local.UserID, remote.UserID, preferRemote)
+	merged.ProfileID = chooseComparable(base.ProfileID, local.ProfileID, remote.ProfileID, preferRemote)
+	merged.PrivateProfile = chooseComparable(base.PrivateProfile, local.PrivateProfile, remote.PrivateProfile, preferRemote)
+	merged.SharedProfile = chooseComparable(base.SharedProfile, local.SharedProfile, remote.SharedProfile, preferRemote)
+	merged.SyncOnStartup = chooseComparable(base.SyncOnStartup, local.SyncOnStartup, remote.SyncOnStartup, preferRemote)
+	merged.SyncOnSave = chooseComparable(base.SyncOnSave, local.SyncOnSave, remote.SyncOnSave, preferRemote)
+	merged.AllowPullApply = chooseComparable(base.AllowPullApply, local.AllowPullApply, remote.AllowPullApply, preferRemote)
+	merged.ShareRecipients = mergeStringSlices(base.ShareRecipients, local.ShareRecipients, remote.ShareRecipients, preferRemote)
+	return merged
+}
+
+func mergeCameraConfigs(base, local, remote []CameraConfig, preferRemote bool) []CameraConfig {
+	baseMap := mapByCameraKey(base)
+	localMap := mapByCameraKey(local)
+	remoteMap := mapByCameraKey(remote)
+
+	order := make([]string, 0, len(local)+len(remote)+len(base))
+	appendOrder := func(list []CameraConfig) {
+		for _, c := range list {
+			key := cameraRuntimeKey(c)
+			found := false
+			for _, existing := range order {
+				if existing == key {
+					found = true
+					break
+				}
+			}
+			if !found {
+				order = append(order, key)
+			}
+		}
+	}
+	appendOrder(local)
+	appendOrder(remote)
+	appendOrder(base)
+
+	out := make([]CameraConfig, 0, len(order))
+	for _, key := range order {
+		baseCam, baseOK := baseMap[key]
+		localCam, localOK := localMap[key]
+		remoteCam, remoteOK := remoteMap[key]
+		mergedCam, keep := mergeOneCamera(baseCam, baseOK, localCam, localOK, remoteCam, remoteOK, preferRemote)
+		if keep {
+			out = append(out, mergedCam)
+		}
+	}
+	return out
+}
+
+func mergeOneCamera(base CameraConfig, baseOK bool, local CameraConfig, localOK bool, remote CameraConfig, remoteOK bool, preferRemote bool) (CameraConfig, bool) {
+	switch {
+	case !baseOK && localOK && remoteOK:
+		if cameraSyncEquivalent(local, remote) {
+			return local, true
+		}
+		if preferRemote {
+			return remote, true
+		}
+		return local, true
+	case !baseOK && localOK:
+		return local, true
+	case !baseOK && remoteOK:
+		return remote, true
+	case baseOK && !localOK && !remoteOK:
+		return CameraConfig{}, false
+	case baseOK && !localOK && remoteOK:
+		if cameraSyncEquivalent(base, remote) {
+			return CameraConfig{}, false
+		}
+		if preferRemote {
+			return remote, true
+		}
+		return CameraConfig{}, false
+	case baseOK && localOK && !remoteOK:
+		if cameraSyncEquivalent(base, local) {
+			return CameraConfig{}, false
+		}
+		if preferRemote {
+			return CameraConfig{}, false
+		}
+		return local, true
+	}
+
+	merged := local
+	merged.ID = chooseComparable(base.ID, local.ID, remote.ID, preferRemote)
+	merged.Name = chooseComparable(base.Name, local.Name, remote.Name, preferRemote)
+	merged.Disabled = chooseComparable(base.Disabled, local.Disabled, remote.Disabled, preferRemote)
+	merged.URL = chooseComparable(base.URL, local.URL, remote.URL, preferRemote)
+	merged.RTSPTCP = chooseComparable(base.RTSPTCP, local.RTSPTCP, remote.RTSPTCP, preferRemote)
+	merged.Caching = chooseComparable(base.Caching, local.Caching, remote.Caching, preferRemote)
+	merged.AlwaysOnTop = chooseComparable(base.AlwaysOnTop, local.AlwaysOnTop, remote.AlwaysOnTop, preferRemote)
+	merged.Mute = chooseComparable(base.Mute, local.Mute, remote.Mute, preferRemote)
+	merged.Stretch = chooseComparable(base.Stretch, local.Stretch, remote.Stretch, preferRemote)
+	merged.FFmpegParams = chooseComparable(base.FFmpegParams, local.FFmpegParams, remote.FFmpegParams, preferRemote)
+	merged.Probesize = chooseComparable(base.Probesize, local.Probesize, remote.Probesize, preferRemote)
+	merged.AnalyzeUS = chooseComparable(base.AnalyzeUS, local.AnalyzeUS, remote.AnalyzeUS, preferRemote)
+	merged.Threads = chooseComparable(base.Threads, local.Threads, remote.Threads, preferRemote)
+	merged.HwAccel = chooseComparable(base.HwAccel, local.HwAccel, remote.HwAccel, preferRemote)
+	merged.Volume = chooseIntPtr(base.Volume, local.Volume, remote.Volume, preferRemote)
+	return merged, true
+}
+
+func mapByCameraKey(list []CameraConfig) map[string]CameraConfig {
+	out := make(map[string]CameraConfig, len(list))
+	for _, c := range list {
+		out[cameraRuntimeKey(c)] = c
+	}
+	return out
+}
+
+func mergeStringSlices(base, local, remote []string, preferRemote bool) []string {
+	b := append([]string(nil), base...)
+	l := append([]string(nil), local...)
+	r := append([]string(nil), remote...)
+	slices.Sort(b)
+	slices.Sort(l)
+	slices.Sort(r)
+	if slices.Equal(l, r) {
+		return local
+	}
+	if slices.Equal(l, b) {
+		return remote
+	}
+	if slices.Equal(r, b) {
+		return local
+	}
+	if preferRemote {
+		return remote
+	}
+	return local
+}
+
+func chooseIntPtr(base, local, remote *int, preferRemote bool) *int {
+	if intPtrEqual(local, remote) {
+		return cloneIntPtr(local)
+	}
+	if intPtrEqual(local, base) {
+		return cloneIntPtr(remote)
+	}
+	if intPtrEqual(remote, base) {
+		return cloneIntPtr(local)
+	}
+	if preferRemote {
+		return cloneIntPtr(remote)
+	}
+	return cloneIntPtr(local)
+}
+
+func cloneIntPtr(v *int) *int {
+	if v == nil {
+		return nil
+	}
+	x := *v
+	return &x
+}
+
+func chooseComparable[T comparable](base, local, remote T, preferRemote bool) T {
+	if local == remote {
+		return local
+	}
+	if local == base {
+		return remote
+	}
+	if remote == base {
+		return local
+	}
+	if preferRemote {
+		return remote
+	}
+	return local
 }

@@ -410,6 +410,9 @@ func (d *SettingsDialog) refreshList() {
 func (d *SettingsDialog) onAdd() {
 	var c CameraConfig
 	if ok := editCameraDialog(d.dlg.QWidget, &c); ok {
+		if c.ID == "" {
+			c.ID = genID()
+		}
 		// Working copy
 		d.cams = append(d.cams, c)
 		d.refreshList()
@@ -460,7 +463,19 @@ func (d *SettingsDialog) onEdit() {
 	}
 
 	edited := d.cams[row]
+	oldCam := d.cams[row]
 	if ok := editCameraDialog(d.dlg.QWidget, &edited); ok {
+		if edited.ID == "" {
+			edited.ID = oldCam.ID
+		}
+		if edited.ID == "" {
+			edited.ID = genID()
+		}
+		edited.Disabled = oldCam.Disabled
+		edited.X = oldCam.X
+		edited.Y = oldCam.Y
+		edited.Width = oldCam.Width
+		edited.Height = oldCam.Height
 		d.cams[row] = edited
 		id := d.cams[row].ID
 		d.refreshList()
@@ -566,7 +581,7 @@ func (d *SettingsDialog) onRemove() {
 
 func (d *SettingsDialog) collectConfig() AppConfig {
 	configMu.Lock()
-	cfg := globalConfig
+	cfg := cloneAppConfig(globalConfig)
 	configMu.Unlock()
 
 	// Preserve runtime-updated fields that the dialog does not edit.
@@ -597,6 +612,7 @@ func (d *SettingsDialog) collectConfig() AppConfig {
 
 	cfg.Cameras = make([]CameraConfig, len(d.cams))
 	copy(cfg.Cameras, d.cams)
+	_ = ensureCameraIDs(cfg.Cameras)
 	for i := range cfg.Cameras {
 		c := &cfg.Cameras[i]
 		key := c.ID
