@@ -90,6 +90,82 @@ func ShowSettingsDialog(parent *qt.QWidget) {
 	_ = s.dlg.Exec()
 }
 
+func rebuildTrayContextMenus() {
+	if tray == nil {
+		return
+	}
+	tray.rebuild()
+	for i, w := range wins {
+		if w == nil {
+			continue
+		}
+		tray.AttachWindowHooks(i, w)
+	}
+}
+
+func applyEditedCameraConfig(parent *qt.QWidget, idx int, edited CameraConfig) bool {
+	configMu.Lock()
+	if idx < 0 || idx >= len(globalConfig.Cameras) {
+		configMu.Unlock()
+		return false
+	}
+
+	oldCam := globalConfig.Cameras[idx]
+	if edited.ID == "" {
+		edited.ID = oldCam.ID
+	}
+	if edited.ID == "" {
+		edited.ID = genID()
+	}
+	edited.Disabled = oldCam.Disabled
+	edited.X = oldCam.X
+	edited.Y = oldCam.Y
+	edited.Width = oldCam.Width
+	edited.Height = oldCam.Height
+	globalConfig.Cameras[idx] = edited
+	configMu.Unlock()
+
+	if idx >= len(wins) {
+		wins = append(wins, make([]*CamWindow, idx-len(wins)+1)...)
+	}
+	if !edited.Disabled {
+		if wins[idx] != nil {
+			wins[idx].RestartWith(edited, "camera-settings")
+		} else {
+			w, err := newCamWindow(edited, idx)
+			if err != nil {
+				log.Printf("open cam %q: %v", safeCamTitle(edited), err)
+			} else {
+				wins[idx] = w
+			}
+		}
+	}
+
+	rebuildTrayContextMenus()
+
+	if err := SaveConfig(); err != nil {
+		log.Printf("Save camera settings failed: %v", err)
+		qt.QMessageBox_Critical(parent, "Error", fmt.Sprintf("Failed to save camera settings:\n\n%v", err))
+		return false
+	}
+	return true
+}
+
+func EditCameraAtIndex(parent *qt.QWidget, idx int) bool {
+	configMu.Lock()
+	if idx < 0 || idx >= len(globalConfig.Cameras) {
+		configMu.Unlock()
+		return false
+	}
+	edited := globalConfig.Cameras[idx]
+	configMu.Unlock()
+
+	if !editCameraDialog(parent, &edited) {
+		return false
+	}
+	return applyEditedCameraConfig(parent, idx, edited)
+}
+
 func newSettingsDialog(parent *qt.QWidget) *SettingsDialog {
 	d := &SettingsDialog{
 		dlg:  qt.NewQDialog(parent),
@@ -442,16 +518,7 @@ func (d *SettingsDialog) onAdd() {
 			}
 			wins[newIdx] = w
 		}
-		tray.rebuild()
-
-		for i, w := range wins {
-			if w == nil {
-				continue
-			}
-			if tray != nil {
-				tray.AttachWindowHooks(i, w)
-			}
-		}
+		rebuildTrayContextMenus()
 
 	}
 }
@@ -463,53 +530,15 @@ func (d *SettingsDialog) onEdit() {
 	}
 
 	edited := d.cams[row]
-	oldCam := d.cams[row]
 	if ok := editCameraDialog(d.dlg.QWidget, &edited); ok {
-		if edited.ID == "" {
-			edited.ID = oldCam.ID
+		if !applyEditedCameraConfig(d.dlg.QWidget, row, edited) {
+			return
 		}
-		if edited.ID == "" {
-			edited.ID = genID()
-		}
-		edited.Disabled = oldCam.Disabled
-		edited.X = oldCam.X
-		edited.Y = oldCam.Y
-		edited.Width = oldCam.Width
-		edited.Height = oldCam.Height
-		d.cams[row] = edited
-		id := d.cams[row].ID
+		configMu.Lock()
+		d.cams[row] = globalConfig.Cameras[row]
+		configMu.Unlock()
 		d.refreshList()
 		d.list.SetCurrentRow(row)
-
-		configMu.Lock()
-		globalConfig.Cameras[row] = edited
-		configMu.Unlock()
-		if !edited.Disabled {
-			for _, w := range wins {
-				if w == nil {
-					continue
-				}
-				if w.cfg.ID == id {
-					w.RestartWith(edited, "re-open")
-				}
-			}
-		}
-		if tray != nil {
-			tray.mu.Lock()
-			// keep tray controller's config in sync with dialog working copy
-			tray.cfg.Cameras = append([]CameraConfig(nil), d.cams...)
-			tray.mu.Unlock()
-			log.Printf("rebuilding the tray...")
-			tray.rebuild()
-		}
-		for i, w := range wins {
-			if w == nil {
-				continue
-			}
-			if tray != nil {
-				tray.AttachWindowHooks(i, w)
-			}
-		}
 	}
 }
 
@@ -559,23 +588,7 @@ func (d *SettingsDialog) onRemove() {
 	}
 
 	// rebuild the tray and context menus
-	if tray != nil {
-		tray.mu.Lock()
-		// keep tray controller's config in sync with dialog working copy
-		tray.cfg.Cameras = append([]CameraConfig(nil), d.cams...)
-		tray.mu.Unlock()
-		tray.rebuild()
-	}
-
-	// reattach new context menus
-	for i, w := range wins {
-		if w == nil {
-			continue
-		}
-		if tray != nil {
-			tray.AttachWindowHooks(i, w)
-		}
-	}
+	rebuildTrayContextMenus()
 
 }
 
@@ -760,27 +773,11 @@ func (d *SettingsDialog) onSave() {
 		if w == nil || w.win == nil {
 			continue
 		}
-		// Global override wins; otherwise fall back to per-camera flag
-		atop := globalConfig.AlwaysOnTopAll
-		if !atop && i < len(globalConfig.Cameras) {
-			atop = globalConfig.Cameras[i].AlwaysOnTop
+		if i < len(globalConfig.Cameras) {
+			w.cfg = globalConfig.Cameras[i]
+			w.refreshIDKey()
 		}
-		w.win.SetWindowFlag2(qt.WindowStaysOnTopHint, atop)
-		// Toggle frameless flag
-		w.win.SetWindowFlag2(qt.FramelessWindowHint, globalConfig.NoWindowsTitles)
-		// toggle the overlay label
-		if w.view != nil {
-			w.view.SetOverlayTitle(safeCamTitle(w.cfg), globalConfig.NoWindowsTitles)
-		}
-
-		// If titles are visible again, make sure the title is set
-		if !globalConfig.NoWindowsTitles {
-			title := safeCamTitle(w.cfg)
-			w.win.SetWindowTitle("Cam: " + title)
-		}
-		// Re-polish to show changes right away
-		w.win.Show()
-
+		w.ApplyWindowSettings()
 		w.ApplyGuiRefreshSettings()
 	}
 

@@ -535,6 +535,41 @@ func (w *CamWindow) SetContextMenu(menu *qt.QMenu) {
 	w.view.SetContextMenu(menu)
 }
 
+func (w *CamWindow) refreshIDKey() {
+	if w == nil {
+		return
+	}
+	w.idKey = w.cfg.ID
+	if w.idKey == "" {
+		w.idKey = w.cfg.Name
+		if w.idKey == "" {
+			w.idKey = w.cfg.URL
+		}
+	}
+}
+
+func (w *CamWindow) ApplyWindowSettings() {
+	if w == nil || w.win == nil {
+		return
+	}
+
+	atop := globalConfig.AlwaysOnTopAll || w.cfg.AlwaysOnTop
+	w.win.SetWindowFlag2(qt.WindowStaysOnTopHint, atop)
+	w.win.SetWindowFlag2(qt.FramelessWindowHint, globalConfig.NoWindowsTitles)
+
+	if w.view != nil {
+		w.view.Stretch = w.cfg.Stretch
+		w.view.SetOverlayTitle(safeCamTitle(w.cfg), globalConfig.NoWindowsTitles)
+		w.view.Update()
+	}
+
+	if !globalConfig.NoWindowsTitles {
+		w.win.SetWindowTitle("Cam: " + safeCamTitle(w.cfg))
+	}
+
+	w.win.Show()
+}
+
 // ToggleFullscreen switches between normal windowed mode and fullscreen.
 // While fullscreen, we suppress move/resize persistence.
 // On exit we restore the exact previous geometry.
@@ -599,6 +634,8 @@ func (w *CamWindow) OnResumeFromSleep() {
 // Update config then restart decode pipeline.
 func (w *CamWindow) RestartWith(c CameraConfig, reason string) {
 	w.cfg = c
+	w.refreshIDKey()
+	w.ApplyWindowSettings()
 	w.backoff = 250 * time.Millisecond
 	w.restartDecoder(reason)
 }
