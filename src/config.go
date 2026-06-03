@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v2"
 )
@@ -61,11 +62,33 @@ type AppConfig struct {
 	GuiRefreshMs      int  `yaml:"gui_refresh_ms,omitempty"`       // ms; used when LimitGuiRefresh=true
 	RepaintOnNewFrame bool `yaml:"repaint_on_new_frame,omitempty"` // only repaint when a new frame arrives
 	// overlays
-	HealthChip   bool `yaml:"health_chip,omitempty"` // show 0–5 health chip on each camera
-	ShowFPS      bool `yaml:"show_fps,omitempty"`
-	ShowBitrate  bool `yaml:"show_bitrate,omitempty"`
-	ShowDrops    bool `yaml:"show_drops,omitempty"`
-	ShowCPUUsage bool `yaml:"show_cpu,omitempty"` // overlay "CPU: xx%"
+	HealthChip   bool            `yaml:"health_chip,omitempty"` // show 0–5 health chip on each camera
+	ShowFPS      bool            `yaml:"show_fps,omitempty"`
+	ShowBitrate  bool            `yaml:"show_bitrate,omitempty"`
+	ShowDrops    bool            `yaml:"show_drops,omitempty"`
+	ShowCPUUsage bool            `yaml:"show_cpu,omitempty"` // overlay "CPU: xx%"
+	SuperSync    SuperSyncConfig `yaml:"supersync,omitempty"`
+}
+
+type SuperSyncConfig struct {
+	Enabled              bool      `yaml:"enabled,omitempty"`
+	BaseURL              string    `yaml:"base_url,omitempty"`
+	AppID                string    `yaml:"app_id,omitempty"`
+	BucketID             string    `yaml:"bucket_id,omitempty"`
+	UserID               string    `yaml:"user_id,omitempty"`
+	DeviceID             string    `yaml:"device_id,omitempty"`
+	ProfileID            string    `yaml:"profile_id,omitempty"`
+	PrivateProfile       bool      `yaml:"private_profile,omitempty"`
+	SharedProfile        bool      `yaml:"shared_profile,omitempty"`
+	ShareRecipients      []string  `yaml:"share_recipients,omitempty"`
+	SyncOnStartup        bool      `yaml:"sync_on_startup,omitempty"`
+	SyncOnSave           bool      `yaml:"sync_on_save,omitempty"`
+	AllowPullApply       bool      `yaml:"allow_pull_apply,omitempty"`
+	SigningKeyPath       string    `yaml:"signing_key_path,omitempty"`
+	EncryptionPassphrase string    `yaml:"encryption_passphrase,omitempty"`
+	LastSyncStatus       string    `yaml:"last_sync_status,omitempty"`
+	LastSyncAt           time.Time `yaml:"last_sync_at,omitempty"`
+	LastError            string    `yaml:"last_error,omitempty"`
 }
 
 type CameraConfig struct {
@@ -90,6 +113,26 @@ type CameraConfig struct {
 	AnalyzeUS int64  `yaml:"analyze_us,omitempty"` // analyze (microseconds)
 	Threads   int    `yaml:"threads,omitempty"`    // threads count per stream, 0=auto
 	HwAccel   string `yaml:"hwaccel,omitempty"`    // "none","videotoolbox","vaapi","nvdec" (not wired here)
+}
+
+func cloneAppConfig(cfg AppConfig) AppConfig {
+	out := cfg
+	if cfg.Cameras != nil {
+		out.Cameras = append([]CameraConfig(nil), cfg.Cameras...)
+	}
+	if cfg.SuperSync.ShareRecipients != nil {
+		out.SuperSync.ShareRecipients = append([]string(nil), cfg.SuperSync.ShareRecipients...)
+	}
+	if cfg.Formations != nil {
+		out.Formations = make([]Formation, len(cfg.Formations))
+		for i := range cfg.Formations {
+			out.Formations[i] = cfg.Formations[i]
+			if cfg.Formations[i].Items != nil {
+				out.Formations[i].Items = append([]FormationItem(nil), cfg.Formations[i].Items...)
+			}
+		}
+	}
+	return out
 }
 
 func initlog() {
@@ -164,12 +207,15 @@ func GetOS() string {
 }
 
 // ensure IDs exist
-func ensureCameraIDs(cs []CameraConfig) {
+func ensureCameraIDs(cs []CameraConfig) bool {
+	changed := false
 	for i := range cs {
 		if cs[i].ID == "" {
 			cs[i].ID = genID()
+			changed = true
 		}
 	}
+	return changed
 }
 
 // UpdateCameraGeometry updates a camera's saved X/Y/Width/Height and persists the YAML.
@@ -183,9 +229,18 @@ func UpdateCameraGeometry(key string, x, y, w, h int) error {
 	idx := -1
 	for i := range globalConfig.Cameras {
 		c := &globalConfig.Cameras[i]
-		if (c.ID != "" && c.ID == key) || (c.ID == "" && c.Name == key) || (key == c.URL) {
+		if c.ID != "" && c.ID == key {
 			idx = i
 			break
+		}
+	}
+	if idx < 0 {
+		for i := range globalConfig.Cameras {
+			c := &globalConfig.Cameras[i]
+			if c.Name == key || c.URL == key {
+				idx = i
+				break
+			}
 		}
 	}
 	if idx >= 0 {
@@ -194,6 +249,8 @@ func UpdateCameraGeometry(key string, x, y, w, h int) error {
 		c.Y = y
 		c.Width = w
 		c.Height = h
+	} else {
+		log.Printf("UpdateCameraGeometry: camera not found for key=%q", key)
 	}
 
 	// atomic write: write to tmp then rename
@@ -230,6 +287,7 @@ func loadConfig(path string) (AppConfig, error) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return cfg, err
 	}
+	ensureSuperSyncDefaults(&cfg)
 	return cfg, nil
 }
 
@@ -237,8 +295,12 @@ func loadConfig(path string) (AppConfig, error) {
 func SaveConfig() error {
 	configMu.Lock()
 	defer configMu.Unlock()
+	return saveConfigLocked()
+}
 
+func saveConfigLocked() error {
 	log.Printf("Saving config to %s\n", env.settingsFile)
+	ensureSuperSyncDefaults(&globalConfig)
 
 	tmp := env.settingsFile + ".tmp"
 	f, err := os.Create(tmp)
@@ -257,4 +319,19 @@ func SaveConfig() error {
 		return err
 	}
 	return os.Rename(tmp, env.settingsFile)
+}
+
+func ensureSuperSyncDefaults(cfg *AppConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.SuperSync.DeviceID == "" {
+		cfg.SuperSync.DeviceID = genID()
+	}
+	if cfg.SuperSync.ProfileID == "" {
+		cfg.SuperSync.ProfileID = "default"
+	}
+	if cfg.SuperSync.AppID == "" {
+		cfg.SuperSync.AppID = appName
+	}
 }

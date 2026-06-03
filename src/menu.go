@@ -98,7 +98,6 @@ func (t *TrayController) rebuild() {
 
 	t.formMenuMounted = false
 
-	cams := qt.NewQMenu4("Cameras", menu.QWidget)
 	t.actions = make([]*qt.QAction, len(t.cfg.Cameras))
 
 	for i := range t.cfg.Cameras {
@@ -109,28 +108,68 @@ func (t *TrayController) rebuild() {
 		if title == "" {
 			title = c.URL
 		}
-		act := cams.AddAction(title)
-		act.SetCheckable(true)
 
-		// Enabled = has a live window AND not marked disabled
 		enabled := !c.Disabled && (*t.wins)[idx] != nil
+		if enabled {
+			camMenu := qt.NewQMenu4(title, menu.QWidget)
+			menu.AddMenu(camMenu)
 
-		// Set initial state without firing the signal
+			topAction := camMenu.MenuAction()
+			topAction.SetCheckable(true)
+			topAction.BlockSignals(true)
+			topAction.SetChecked(true)
+			topAction.BlockSignals(false)
+
+			disableAct := camMenu.AddAction("Disable camera")
+			disableAct.OnTriggered(func() {
+				t.onActionToggled(idx, false, topAction)
+			})
+
+			camMenu.AddSeparator()
+
+			mutedAct := camMenu.AddAction("Mute audio")
+			mutedAct.SetCheckable(true)
+			mutedAct.BlockSignals(true)
+			mutedAct.SetChecked(c.Mute)
+			mutedAct.BlockSignals(false)
+			mutedAct.OnToggled(func(checked bool) {
+				t.onCameraMuteToggled(idx, checked, mutedAct)
+			})
+
+			topAct := camMenu.AddAction("Always on top")
+			topAct.SetCheckable(true)
+			topAct.BlockSignals(true)
+			topAct.SetChecked(c.AlwaysOnTop)
+			topAct.BlockSignals(false)
+			topAct.OnToggled(func(checked bool) {
+				t.onCameraAlwaysOnTopToggled(idx, checked, topAct)
+			})
+
+			camMenu.AddSeparator()
+			settingsAct := camMenu.AddAction("Camera settings...")
+			settingsAct.OnTriggered(func() {
+				EditCameraAtIndex(nil, idx)
+			})
+
+			t.actions[idx] = topAction
+			continue
+		}
+
+		act := menu.AddAction(title)
+		act.SetCheckable(true)
 		act.BlockSignals(true)
-		act.SetChecked(enabled)
+		act.SetChecked(false)
 		act.BlockSignals(false)
-
-		// Capture this QAction so we can update its check state immediately.
 		thisAction := act
 		act.OnToggled(func(checked bool) {
 			t.onActionToggled(idx, checked, thisAction)
 		})
-
 		t.actions[idx] = act
 	}
 
-	menu.AddActions(t.actions) // as main menu
-	menu.AddSeparator()
+	if len(t.cfg.Cameras) > 0 {
+		menu.AddSeparator()
+	}
 
 	//if t.formMenu != nil {
 	//	t.rebuildFormationsList() // refresh content only
@@ -219,25 +258,72 @@ func (t *TrayController) rebuild() {
 	t.tray.SetContextMenu(menu)
 }
 
-// Keep menu check state and actual window state in lockstep.
-func (t *TrayController) onActionToggled(idx int, checked bool, act *qt.QAction) {
+func (t *TrayController) onCameraMuteToggled(idx int, muted bool, act *qt.QAction) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if idx < 0 || idx >= len(t.cfg.Cameras) {
 		return
 	}
+
+	t.cfg.Cameras[idx].Mute = muted
+	if idx < len(*t.wins) && (*t.wins)[idx] != nil {
+		(*t.wins)[idx].cfg.Mute = muted
+	}
+
+	act.BlockSignals(true)
+	act.SetChecked(muted)
+	act.BlockSignals(false)
+
+	if err := SaveConfig(); err != nil {
+		log.Printf("save config: %v", err)
+	}
+}
+
+func (t *TrayController) onCameraAlwaysOnTopToggled(idx int, atop bool, act *qt.QAction) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if idx < 0 || idx >= len(t.cfg.Cameras) {
+		return
+	}
+
+	t.cfg.Cameras[idx].AlwaysOnTop = atop
+	if idx < len(*t.wins) && (*t.wins)[idx] != nil {
+		(*t.wins)[idx].cfg.AlwaysOnTop = atop
+		(*t.wins)[idx].ApplyWindowSettings()
+	}
+
+	act.BlockSignals(true)
+	act.SetChecked(atop)
+	act.BlockSignals(false)
+
+	if err := SaveConfig(); err != nil {
+		log.Printf("save config: %v", err)
+	}
+}
+
+// Keep menu check state and actual window state in lockstep.
+func (t *TrayController) onActionToggled(idx int, checked bool, act *qt.QAction) {
+	t.mu.Lock()
+
+	if idx < 0 || idx >= len(t.cfg.Cameras) {
+		t.mu.Unlock()
+		return
+	}
 	t.ensureWinsLen()
 
 	c := &t.cfg.Cameras[idx]
+	rebuildMenu := false
 
 	if !checked {
 		// Turn OFF → close window and mark disabled
 		c.Disabled = true
-		// Force checkbox to OFF without re-triggering the slot
-		act.BlockSignals(true)
-		act.SetChecked(false)
-		act.BlockSignals(false)
+		if act != nil {
+			act.BlockSignals(true)
+			act.SetChecked(false)
+			act.BlockSignals(false)
+		}
 		// Grab and clear the window slot first, then close non-blocking.
 		w := (*t.wins)[idx]
 		(*t.wins)[idx] = nil
@@ -245,9 +331,14 @@ func (t *TrayController) onActionToggled(idx int, checked bool, act *qt.QAction)
 			w.SuppressOnClosedOnce()
 			w.Close()
 		}
+		rebuildMenu = true
 
 		if err := SaveConfig(); err != nil {
 			log.Printf("save config: %v", err)
+		}
+		t.mu.Unlock()
+		if rebuildMenu {
+			rebuildTrayContextMenus()
 		}
 		return
 	}
@@ -258,25 +349,34 @@ func (t *TrayController) onActionToggled(idx int, checked bool, act *qt.QAction)
 		w, err := newCamWindow(*c, idx)
 		if err != nil {
 			log.Printf("open cam %q: %v", c.Name, err)
-			// revert checkbox to OFF if failed
-			act.BlockSignals(true)
-			act.SetChecked(false)
-			act.BlockSignals(false)
 			c.Disabled = true
+			if act != nil {
+				act.BlockSignals(true)
+				act.SetChecked(false)
+				act.BlockSignals(false)
+			}
+			t.mu.Unlock()
+			rebuildTrayContextMenus()
 			return
 		}
 		(*t.wins)[idx] = w
 		// give hooks + context menu
 		t.AttachWindowHooks(idx, w)
 	}
+	rebuildMenu = true
 
-	// Force checkbox to ON (should already be true, but keep them in sync)
-	act.BlockSignals(true)
-	act.SetChecked(true)
-	act.BlockSignals(false)
+	if act != nil {
+		act.BlockSignals(true)
+		act.SetChecked(true)
+		act.BlockSignals(false)
+	}
 
 	if err := SaveConfig(); err != nil {
 		log.Printf("save config: %v", err)
+	}
+	t.mu.Unlock()
+	if rebuildMenu {
+		rebuildTrayContextMenus()
 	}
 }
 
@@ -301,9 +401,9 @@ func (t *TrayController) AttachWindowHooks(idx int, w *CamWindow) {
 
 func (t *TrayController) WindowWasClosed(idx int) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	if idx < 0 || idx >= len(t.cfg.Cameras) {
+		t.mu.Unlock()
 		return
 	}
 	t.ensureWinsLen()
@@ -320,6 +420,7 @@ func (t *TrayController) WindowWasClosed(idx int) {
 			t.actions[idx].SetChecked(false)
 			t.actions[idx].BlockSignals(false)
 		}
+		t.mu.Unlock()
 		return
 	}
 
@@ -335,4 +436,6 @@ func (t *TrayController) WindowWasClosed(idx int) {
 	if err := SaveConfig(); err != nil {
 		log.Printf("save config: %v", err)
 	}
+	t.mu.Unlock()
+	rebuildTrayContextMenus()
 }

@@ -110,7 +110,22 @@ func main() {
 	}
 
 	globalConfig = cfg
-	ensureCameraIDs(globalConfig.Cameras) // ensure that the cameras have identification numbers
+	idsAdded := ensureCameraIDs(globalConfig.Cameras) // ensure that the cameras have identification numbers
+	ensureSuperSyncDefaults(&globalConfig)
+	if idsAdded {
+		if err := SaveConfig(); err != nil {
+			log.Printf("failed to persist generated camera IDs: %v", err)
+		}
+	}
+
+	if globalConfig.SuperSync.Enabled && globalConfig.SuperSync.SyncOnStartup {
+		if err := superSync.SyncCurrentConfig("startup"); err != nil {
+			log.Printf("supersync startup sync failed: %v", err)
+		}
+		configMu.Lock()
+		cfg = globalConfig
+		configMu.Unlock()
+	}
 
 	wins = make([]*CamWindow, len(globalConfig.Cameras))
 
@@ -139,6 +154,7 @@ func main() {
 		}
 		tray.AttachWindowHooks(i, w)
 	}
+	superSync.StartPolling()
 	IgnoreSignum()
 
 	go HandleSleep(wins)
@@ -150,10 +166,18 @@ func main() {
 
 	code := qt.QApplication_Exec()
 	// cleanup
-	SaveConfig()
 	for _, w := range wins {
+		if w != nil {
+			w.PersistGeometryNow()
+		}
+	}
+	for _, w := range wins {
+		if w == nil {
+			continue
+		}
 		w.Close()
 	}
+	SaveConfig()
 	os.Exit(code)
 }
 

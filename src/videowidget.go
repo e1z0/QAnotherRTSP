@@ -327,6 +327,7 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 				w.groupPos = nil
 			}
 		}
+		w.GrabMouse()
 		ev.Accept()
 	})
 
@@ -408,6 +409,9 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 
 		// Apply geometry
 		top.SetGeometry(nx, ny, nw, nh)
+		if w.owner != nil {
+			w.owner.ScheduleGeometrySave()
+		}
 
 		if w.snapActive() {
 			// snap the lead window, then offset the group by the same delta
@@ -423,15 +427,18 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 				}
 				op := w.groupPos[cw]
 				cw.win.Move(op.X+dx+sdx, op.Y+dy+sdy)
+				cw.ScheduleGeometrySave()
 				moved = true
 			}
 			if !moved && w.owner != nil && w.owner.win != nil {
 				// fallback: move only this window
 				w.owner.win.Move(nx, ny)
+				w.owner.ScheduleGeometrySave()
 			}
 		} else {
 			if w.owner != nil && w.owner.win != nil {
 				w.owner.win.Move(nx, ny)
+				w.owner.ScheduleGeometrySave()
 			}
 		}
 		ev.Accept()
@@ -440,6 +447,15 @@ func NewVideoWidget(buf *frameBuf, parent *qt.QWidget, stretch bool) *VideoWidge
 	// Mouse release: leave move/resize mode
 	w.OnMouseReleaseEvent(func(super func(event *qt.QMouseEvent), ev *qt.QMouseEvent) {
 		if (w.dragging || w.resizing) && ev.Button() == qt.LeftButton {
+			for _, cw := range w.group {
+				if cw != nil {
+					cw.PersistGeometryNow()
+				}
+			}
+			if w.owner != nil {
+				w.owner.PersistGeometryNow()
+			}
+			w.ReleaseMouse()
 			w.dragging, w.resizing = false, false
 			w.edgeMask = 0
 			w.UnsetCursor()
